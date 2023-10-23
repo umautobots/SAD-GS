@@ -12,7 +12,7 @@
 import os
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim
+from utils.loss_utils import l1_loss, l2_loss, ssim
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -22,6 +22,10 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -77,17 +81,54 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             viewpoint_stack = scene.getTrainCameras().copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
 
+        gt_depth = viewpoint_cam.depth
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
+
+        print('------------ Forward --------------')
+        print('viewpoint_cam.pose_tensor feed into forward pass: \n', viewpoint_cam.pose_tensor)
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
-        image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+        image, viewspace_point_tensor, visibility_filter, radii, depth = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"], render_pkg["depth"]
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
-        loss.backward()
+        color_loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        # loss = 0
+
+        gt_depth = gt_depth / 6553.5 * 255.0
+        depth[0][gt_depth == 0] = 0
+
+        ### viz ###
+        # if iteration > 1000 and iteration % 100 == 0:
+        #     f, axarr = plt.subplots(1,2)
+        #     axarr[0].imshow(torch.squeeze(gt_depth).cpu().detach().numpy(), vmax=3)
+        #     axarr[1].imshow(torch.squeeze(depth).cpu().detach().numpy(), vmax=3)
+        #     # plt.show()
+        #     plt.savefig('./fig/'+f'{iteration}'+'.png')
+
+        lambda_depth = 1 #0.1
+        depth_loss = l1_loss(depth, gt_depth) * lambda_depth
+        loss = color_loss + depth_loss
+
+        # print('color_loss: ', color_loss, 'depth_loss: ', depth_loss)
+
+        print('--- backward ---')
+        loss.backward(retain_graph=True)
+
+        # print('viewspace_point_tensor.grad.shape: ', viewspace_point_tensor.grad.shape) # mean2D grad
+        # print('viewpoint_cam.world_view_transform.grad: ', viewpoint_cam.world_view_transform.grad)
+        # print('viewpoint_cam.full_proj_transform.grad: ', viewpoint_cam.full_proj_transform.grad)
+        print('viewpoint_cam.pose_tensor.grad: ', viewpoint_cam.pose_tensor.grad)
+
+        ### viz ###
+        # import matplotlib.pyplot as plt
+        # import matplotlib.image as mpimg
+        # f, axarr = plt.subplots(1,2)
+        # axarr[0].imshow(torch.permute(gt_image, (1, 2, 0)).cpu().detach().numpy())
+        # axarr[1].imshow(torch.permute(image, (1, 2, 0)).cpu().detach().numpy())
+        # plt.show()
 
         iter_end.record()
 
@@ -121,8 +162,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             # Optimizer step
             if iteration < opt.iterations:
+                # print('gaussians._xyz.grad: ', gaussians._xyz.grad.shape)
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
+
+                viewpoint_cam.optimizer.step()
+                viewpoint_cam.optimizer.zero_grad(set_to_none = True)
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
@@ -202,6 +247,9 @@ if __name__ == "__main__":
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
+
+    parser.add_argument("--ds", action="store_true", default=False)
+
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     

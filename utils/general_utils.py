@@ -131,3 +131,11 @@ def safe_state(silent):
     np.random.seed(0)
     torch.manual_seed(0)
     torch.cuda.set_device(torch.device("cuda:0"))
+
+def ArrayToTorch(array, resolution):
+    resized_image_torch = torch.from_numpy(array)
+
+    if len(resized_image_torch.shape) == 3:
+        return resized_image_torch.permute(2, 0, 1)
+    else:
+        return resized_image_torch.unsqueeze(dim=-1).permute(2, 0, 1)
