@@ -13,13 +13,14 @@ import torch
 from torch import nn
 import numpy as np
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix
+from utils.general_utils import get_expon_lr_func
 import pytorch3d.transforms
 
 class Camera(nn.Module):
     def __init__(self, colmap_id, R, T, FoVx, FoVy, image, gt_alpha_mask,
                  image_name, uid,
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda",
-                 depth=None
+                 depth=None, R_gt=None, T_gt=None
                  ):
         super(Camera, self).__init__()
 
@@ -54,16 +55,32 @@ class Camera(nn.Module):
         self.trans = trans
         self.scale = scale
 
+        if R_gt.any() and T_gt.any():
+            _world_view_transform_gt = torch.tensor(getWorld2View2(R_gt, T_gt, trans, scale)).cuda()
+            self.pose_tensor_gt = self.transform_to_tensor(_world_view_transform_gt)
+
         _world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale)).cuda()
         self.pose_tensor = self.transform_to_tensor(_world_view_transform).requires_grad_(True)
 
-        ### define optimizor ###
-        l = [{'params': [self.pose_tensor], 'lr': 0.001, "name": "pose"}]
+        ### define optimizer ###
+        l = [{'params': [self.pose_tensor], 'lr': 0.005, "name": "pose"}] # 0.005
         # l = [{'params': [self.pose_tensor], 'lr': 0.001, "name": "pose"},
         #      {'params': [self.world_view_transform], 'lr': 0.001, "name": "viewmat"}
         #      {'params': [self.full_proj_transform], 'lr': 0.001, "name": "projmat"}]
-        self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+        self.optimizer = torch.optim.Adam(l)
 
+        self.xyz_scheduler_args = get_expon_lr_func(lr_init=0.1,
+                                                    lr_final=0.02,
+                                                    lr_delay_mult=0.01,
+                                                    max_steps=300)
+    def update_learning_rate(self, iteration):
+        ''' Learning rate scheduling per step '''
+        for param_group in self.optimizer.param_groups:
+            if param_group["name"] == "pose":
+                lr = self.xyz_scheduler_args(iteration)
+                param_group['lr'] = lr
+                return lr
+            
     def get_world_view_transform(self):
         world_view_transform = self.tensor_to_transform(self.pose_tensor).transpose(0,1)
         return world_view_transform
