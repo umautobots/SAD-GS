@@ -44,16 +44,12 @@ def loadCam(args, id, cam_info, resolution_scale):
 
     if cam_info.depth is not None:
         resized_depth_rgb = PILtoTorch(cam_info.depth, resolution)
-        # import torch
-        # print('loadCam: np.max(cam_info.depth)', np.max(cam_info.depth))
-        # print('loadCam: resized_depth_rgb', torch.max(resized_depth_rgb))
     else:
         resized_depth_rgb = None
 
     if resized_depth_rgb is not None:
         depth_mask = resized_depth_rgb[0, ...] > 60000
         gt_depth = resized_depth_rgb[0, ...]
-        # print('gt_depth', gt_depth.shape)
         gt_depth[depth_mask] = 0
     else:
         gt_depth = None
@@ -66,7 +62,7 @@ def loadCam(args, id, cam_info, resolution_scale):
     return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
                   image=gt_image, gt_alpha_mask=loaded_mask,
-                  image_name=cam_info.image_name, uid=id, data_device=args.data_device, depth=gt_depth)
+                  image_name=cam_info.image_name, uid=id, data_device=args.data_device, depth=gt_depth, R_gt=cam_info.R_gt, T_gt=cam_info.T_gt)
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args):
     camera_list = []

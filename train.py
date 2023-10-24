@@ -32,11 +32,11 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, args):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
-    scene = Scene(dataset, gaussians)
+    scene = Scene(dataset, gaussians, pose_trans_noise=args.pose_trans_noise, single_frame_id=args.single_frame_id)
     gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
@@ -86,8 +86,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if (iteration - 1) == debug_from:
             pipe.debug = True
 
-        print('------------ Forward --------------')
-        print('viewpoint_cam.pose_tensor feed into forward pass: \n', viewpoint_cam.pose_tensor)
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii, depth = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"], render_pkg["depth"]
 
@@ -95,10 +93,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
         color_loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
-        # loss = 0
+        loss = color_loss
 
         gt_depth = gt_depth / 6553.5 * 255.0
         depth[0][gt_depth == 0] = 0
+        lambda_depth = 1
+        depth_loss = l1_loss(depth, gt_depth) * lambda_depth
+        if args.DS:
+            loss += depth_loss
 
         ### viz ###
         # if iteration > 1000 and iteration % 100 == 0:
@@ -107,28 +109,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         #     axarr[1].imshow(torch.squeeze(depth).cpu().detach().numpy(), vmax=3)
         #     # plt.show()
         #     plt.savefig('./fig/'+f'{iteration}'+'.png')
+        # if iteration % 10 == 0:
+        #     gt_image_np = torch.permute(gt_image, (1, 2, 0)).cpu().detach().numpy()
+        #     render_image_np = torch.permute(image, (1, 2, 0)).cpu().detach().numpy()
+        #     plt.imshow(0.5*gt_image_np+0.5*render_image_np)
+        #     # plt.show()
+        #     if not os.path.exists('./fig/tmp/'):
+        #         os.mkdir('./fig/tmp/')
+        #     plt.savefig('./fig/tmp/'+f'{iteration}'+'.png')
 
-        lambda_depth = 1 #0.1
-        depth_loss = l1_loss(depth, gt_depth) * lambda_depth
-        loss = color_loss + depth_loss
-
-        # print('color_loss: ', color_loss, 'depth_loss: ', depth_loss)
-
-        print('--- backward ---')
         loss.backward(retain_graph=True)
-
-        # print('viewspace_point_tensor.grad.shape: ', viewspace_point_tensor.grad.shape) # mean2D grad
-        # print('viewpoint_cam.world_view_transform.grad: ', viewpoint_cam.world_view_transform.grad)
-        # print('viewpoint_cam.full_proj_transform.grad: ', viewpoint_cam.full_proj_transform.grad)
-        print('viewpoint_cam.pose_tensor.grad: ', viewpoint_cam.pose_tensor.grad)
-
-        ### viz ###
-        # import matplotlib.pyplot as plt
-        # import matplotlib.image as mpimg
-        # f, axarr = plt.subplots(1,2)
-        # axarr[0].imshow(torch.permute(gt_image, (1, 2, 0)).cpu().detach().numpy())
-        # axarr[1].imshow(torch.permute(image, (1, 2, 0)).cpu().detach().numpy())
-        # plt.show()
 
         iter_end.record()
 
@@ -162,12 +152,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             # Optimizer step
             if iteration < opt.iterations:
-                # print('gaussians._xyz.grad: ', gaussians._xyz.grad.shape)
-                gaussians.optimizer.step()
-                gaussians.optimizer.zero_grad(set_to_none = True)
+                if not args.localization:
+                    gaussians.optimizer.step()
+                    gaussians.optimizer.zero_grad(set_to_none = True)
 
+            if args.BA or args.localization:
                 viewpoint_cam.optimizer.step()
                 viewpoint_cam.optimizer.zero_grad(set_to_none = True)
+                viewpoint_cam.update_learning_rate(iteration)
+                # save_poses(iteration, scene.model_path, scene.getTrainCameras().copy())
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
@@ -194,6 +187,19 @@ def prepare_output_and_logger(args):
     else:
         print("Tensorboard not available: not logging progress")
     return tb_writer
+
+
+def save_poses(iteration, path, viewpoint_stack):
+    if not os.path.exists(path+'/poses'):
+        os.mkdir(path+'/poses')
+    with open(path+'/poses/'+str(iteration)+'.txt', 'w') as f:
+        for viewpoint_cam in viewpoint_stack:
+            t_gt = viewpoint_cam.pose_tensor_gt[:3]
+            t_est = viewpoint_cam.pose_tensor[:3]
+            err = torch.sqrt(torch.norm(t_gt-t_est)).cpu().numpy()
+            print('error: ', err)
+            # f.write(str(viewpoint_cam.pose_tensor.cpu().numpy()))
+
 
 def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
     if tb_writer:
@@ -248,7 +254,11 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
 
-    parser.add_argument("--ds", action="store_true", default=False)
+    parser.add_argument('--pose_trans_noise', type=float, default=0.0)
+    parser.add_argument("--DS", action="store_true", default=False)
+    parser.add_argument("--BA", action="store_true", default=False)
+    parser.add_argument("--localization", action="store_true", default=False)
+    parser.add_argument('--single_frame_id', type=int, default=None)
 
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
@@ -261,7 +271,7 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args)
 
     # All done
     print("\nTraining complete.")

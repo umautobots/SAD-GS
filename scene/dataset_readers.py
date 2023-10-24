@@ -38,6 +38,8 @@ class CameraInfo(NamedTuple):
     width: int
     height: int
     depth: np.array
+    R_gt: np.array
+    T_gt: np.array
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -151,10 +153,7 @@ def readColmapSceneInfo(path, images, depths, eval, llffhold=8):
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.txt")
         cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
         cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
-    # print('cam_extrinsics: ')
-    # print(cam_extrinsics)
-    # print('cam_intrinsics: ')
-    # print(cam_intrinsics)
+
     reading_dir = "images" if images == None else images
     depth_dir = "depths" if depths == None else depths
 
@@ -304,26 +303,13 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
                            ply_path=ply_path)
     return scene_info
 
-def readReplicaInfo(path, eval, extension=".png"):
-
-    print('path', path)
-
+def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_id=None):
     traj_file = os.path.join(path, 'traj.txt')
     with open(traj_file, 'r') as poses_file:
         poses = poses_file.readlines()
     
     image_paths = sorted(glob.glob(os.path.join(path, 'images/*')))
     depth_paths = sorted(glob.glob(os.path.join(path, 'depths/*')))
-
-    # Replica dataset
-    # cam:
-    # H: 680
-    # W: 1200
-    # fx: 600.0
-    # fy: 600.0
-    # cx: 599.5
-    # cy: 339.5
-    # png_depth_scale: 6553.5 #for depth image in png format
     
     cam_infos = []
     mat_list=[]
@@ -331,22 +317,28 @@ def readReplicaInfo(path, eval, extension=".png"):
     pc_init = np.zeros((0,3))
     color_init = np.zeros((0,3))
 
-    np.random.seed(0)
     for idx, (image_path, depth_path) in enumerate(zip(image_paths, depth_paths)):
-        # print('idx: ', idx)
-        # print(image_path)
-        # print(depth_path)
+        if (single_frame_id is not None) and (idx is not single_frame_id):
+            continue
 
         mat = np.array(poses[idx].split('\n')[0].split(' ')).reshape((4,4)).astype('float64')
         mat_list.append(mat)
 
         R = mat[:3,:3]
         T = mat[:3, 3]
+
+        R_gt=R.copy()
+        T_gt=T.copy()
         
-        noise = np.random.rand(3) * 0.3
-        T += noise
-        # invert
+        # Add noise to poses
+        if pose_trans_noise > 0:
+            np.random.seed(0)
+            noise = np.random.rand(3) * pose_trans_noise
+            T += noise
+
+        # Invert
         T = -R.T @ T # convert from real world to GS format: R=R, T=T.inv()
+        T_gt = -R_gt.T @ T_gt # convert from real world to GS format: R=R, T=T.inv()
 
         height = 680
         width = 1200
@@ -360,7 +352,7 @@ def readReplicaInfo(path, eval, extension=".png"):
         depth = Image.open(depth_path)
 
         cam_info = CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                              image_path=image_path, image_name=image_name, width=width, height=height, depth=depth)
+                              image_path=image_path, image_name=image_name, width=width, height=height, depth=depth, R_gt=R_gt, T_gt=T_gt)
         cam_infos.append(cam_info)
     
     train_cam_infos = cam_infos
@@ -376,13 +368,12 @@ def readReplicaInfo(path, eval, extension=".png"):
             depth = Image.open(depth_path)
             o3d_depth = o3d.geometry.Image(np.array(depth).astype(np.float32))
             o3d_image = o3d.geometry.Image(np.array(image).astype(np.uint8))
+            # Replica dataset cam: H: 680 W: 1200 fx: 600.0 fy: 600.0 cx: 599.5 cy: 339.5 png_depth_scale: 6553.5
             o3d_intrinsic = o3d.camera.PinholeCameraIntrinsic(1200, 680, 600, 600, 599.5, 339.5)
             # o3d_pc = o3d.geometry.PointCloud.create_from_depth_image(depth=o3d_depth, intrinsic=o3d_intrinsic, extrinsic=np.identity(4), depth_scale=6553.5, stride=50)
             rgbd_img = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d_image, o3d_depth, depth_scale=6553.5, depth_trunc=1000, convert_rgb_to_intensity=False)
             o3d_pc = o3d.geometry.PointCloud.create_from_rgbd_image(image=rgbd_img, intrinsic=o3d_intrinsic, extrinsic=np.identity(4))
             dist = np.linalg.norm(np.asarray(o3d_pc.points), axis=1)
-            print('max dist: ', np.max(dist))
-            print('max depth: ', np.max(depth)/6553.5)
 
             o3d_pc = o3d_pc.transform(mat)
             pc_init = np.concatenate((pc_init, np.asarray(o3d_pc.points)[::20]), axis=0)
@@ -391,7 +382,7 @@ def readReplicaInfo(path, eval, extension=".png"):
         num_pts = pc_init.shape[0]
         xyz = pc_init
 
-        color_init = np.ones_like(color_init) # !!! initialize all color to white for viz
+        # color_init = np.ones_like(color_init) # !!! initialize all color to white for viz
 
         pcd = BasicPointCloud(points=xyz, colors=color_init, normals=np.zeros((num_pts, 3)))
         storePly(ply_path, pc_init, color_init*255)

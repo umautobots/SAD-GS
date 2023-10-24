@@ -34,7 +34,6 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         results = render(view, gaussians, pipeline, background)
         rendering = results["render"]
         depth = results["depth"]
-        print('render depth: ', torch.max(depth), torch.min(depth))
         depth = depth / (depth.max() + 1e-5)
 
         gt = view.original_image[0:3, :, :]
