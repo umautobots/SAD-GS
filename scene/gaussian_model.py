@@ -11,15 +11,18 @@
 
 import torch
 import numpy as np
-from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
+import functools
+
+from ..utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
 from torch import nn
 import os
-from utils.system_utils import mkdir_p
+from ..utils.system_utils import mkdir_p
 from plyfile import PlyData, PlyElement
-from utils.sh_utils import RGB2SH
+from ..utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
-from utils.graphics_utils import BasicPointCloud
-from utils.general_utils import strip_symmetric, build_scaling_rotation
+from ..utils.graphics_utils import BasicPointCloud
+from ..utils.general_utils import strip_symmetric, build_scaling_rotation
+
 
 class GaussianModel:
 
@@ -146,21 +149,88 @@ class GaussianModel:
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
-    def training_setup(self, training_args):
+    def add_from_pcd(self, pcd: BasicPointCloud, spatial_lr_scale: float):
+        assert spatial_lr_scale == self.spatial_lr_scale
+        
+        fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
+        fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
+        features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+        features[:, :3, 0 ] = fused_color
+        features[:, 3:, 1:] = 0.0
+
+        print(f"Adding {fused_point_cloud.shape[0]} gaussians")
+
+        dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
+        scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
+        rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
+        rots[:, 0] = 1
+
+        opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
+
+        N_old = self._xyz.shape[0]
+        N_new = N_old + fused_color.shape[0]
+
+        def update_param(old_data: torch.Tensor, new_data: torch.Tensor):
+            new_data.requires_grad_(True)
+            new_data = new_data.to(old_data)
+
+            output_data = torch.zeros((N_new, *old_data.shape[1:])).to(old_data)
+            output_data[:N_old] = old_data
+            output_data[N_old:] = new_data
+            return nn.Parameter(output_data)
+
+        self._xyz = update_param(self._xyz, fused_point_cloud)
+        self._features_dc = update_param(self._features_dc, features[:,:,0:1].transpose(1, 2).contiguous())
+        self._features_rest = update_param(self._features_rest, features[:,:,1:].transpose(1, 2).contiguous())
+        self._scaling = update_param(self._scaling, scales)
+        self._rotation = update_param(self._rotation, rots)
+        self._opacity = update_param(self._opacity, opacities)
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+
+    def training_setup(self, training_args, train_gaussians: bool = True, optimizable_poses = None):
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
-        l = [
-            {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
-            {'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"},
-            {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
-            {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
-            {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
-            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
-        ]
+        def configure_param(param_list, param: nn.Parameter, lr: float, name: str):
+            if lr > 0:
+                param.requires_grad_(True)
+                param_list.append({'params': [param], 'lr': lr, "name": name})
+            else:
+                param.requires_grad_(False)
+        
+        param_groups = []
 
-        self.optimizer = torch.optim.Adam(l) #, lr=0.0, eps=1e-15)
+        if train_gaussians:
+            param_groups += [
+                (self._xyz, training_args.position_lr_init * self.spatial_lr_scale, "xyz"),
+                (self._features_dc, training_args.feature_lr, "f_dc"),
+                (self._features_rest, training_args.feature_lr / 20.0, "f_rest"),
+                (self._opacity, training_args.opacity_lr, "opacity"),
+                (self._scaling, training_args.scaling_lr, "scaling"),
+                (self._rotation, training_args.rotation_lr, "rotation")
+            ]
+
+        if optimizable_poses is not None:
+            param_groups.append((torch.vstack(optimizable_poses), training_args.poses_lr, "poses"))
+
+        l = []
+        for p in param_groups:
+            configure_param(l, *p)
+
+        if len(l) == 0:
+            raise RuntimeError("Can't optimize with nothing to optimize :)")
+
+        # l = [
+        #     {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
+        #     {'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"},
+        #     {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
+        #     {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
+        #     {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
+        #     {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
+        # ]
+
+        self.optimizer = torch.optim.Adam(l)
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
                                                     lr_final=training_args.position_lr_final*self.spatial_lr_scale,
                                                     lr_delay_mult=training_args.position_lr_delay_mult,
