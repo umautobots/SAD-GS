@@ -77,7 +77,7 @@ class GaussianModel:
             self.spatial_lr_scale,
         )
     
-    def restore(self, model_args, training_args):
+    def restore(self, model_args, training_args = None):
         (self.active_sh_degree, 
         self._xyz, 
         self._features_dc, 
@@ -90,10 +90,13 @@ class GaussianModel:
         denom,
         opt_dict, 
         self.spatial_lr_scale) = model_args
-        self.training_setup(training_args)
+
+        if training_args is not None:
+            self.training_setup(training_args)
+            self.optimizer.load_state_dict(opt_dict)
+
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
-        self.optimizer.load_state_dict(opt_dict)
 
     @property
     def get_scaling(self):
@@ -149,7 +152,7 @@ class GaussianModel:
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
-    def add_from_pcd(self, pcd: BasicPointCloud, spatial_lr_scale: float):
+    def add_from_pcd(self, pcd: BasicPointCloud, spatial_lr_scale: float, voxel_size):
         assert spatial_lr_scale == self.spatial_lr_scale
         
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
@@ -168,17 +171,22 @@ class GaussianModel:
         opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
 
         N_old = self._xyz.shape[0]
-        N_new = N_old + fused_color.shape[0]
+
+        dist_to_existing_points = torch.cdist(fused_point_cloud, self._xyz).min(dim=1)[0]
+        keep_mask = dist_to_existing_points > voxel_size 
+        print(f"jk, actually only adding {keep_mask.sum()} gaussians")
+
+        N_new = N_old + keep_mask.sum()
 
         def update_param(old_data: torch.Tensor, new_data: torch.Tensor):
             new_data.requires_grad_(True)
-            new_data = new_data.to(old_data)
+            new_data = new_data.to(old_data)[keep_mask]
 
             output_data = torch.zeros((N_new, *old_data.shape[1:])).to(old_data)
             output_data[:N_old] = old_data
             output_data[N_old:] = new_data
             return nn.Parameter(output_data)
-
+        
         self._xyz = update_param(self._xyz, fused_point_cloud)
         self._features_dc = update_param(self._features_dc, features[:,:,0:1].transpose(1, 2).contiguous())
         self._features_rest = update_param(self._features_rest, features[:,:,1:].transpose(1, 2).contiguous())
@@ -194,8 +202,10 @@ class GaussianModel:
 
         def configure_param(param_list, param: nn.Parameter, lr: float, name: str):
             if lr > 0:
-                param.requires_grad_(True)
-                param_list.append({'params': [param], 'lr': lr, "name": name})
+                if name != "poses":
+                    param.requires_grad_(True)
+                    param = [param]
+                param_list.append({'params': param, 'lr': lr, "name": name})
             else:
                 param.requires_grad_(False)
         
@@ -212,7 +222,7 @@ class GaussianModel:
             ]
 
         if optimizable_poses is not None:
-            param_groups.append((torch.vstack(optimizable_poses), training_args.poses_lr, "poses"))
+            param_groups.append((optimizable_poses, training_args.poses_lr, "poses"))
 
         l = []
         for p in param_groups:
@@ -343,6 +353,9 @@ class GaussianModel:
     def _prune_optimizer(self, mask):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
+            if group["name"] == "poses":
+                continue
+
             stored_state = self.optimizer.state.get(group['params'][0], None)
             if stored_state is not None:
                 stored_state["exp_avg"] = stored_state["exp_avg"][mask]
@@ -377,7 +390,13 @@ class GaussianModel:
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
+            if group["name"] == "poses":
+                continue
             assert len(group["params"]) == 1
+            
+            if group["name"] == "poses":
+                continue
+
             extension_tensor = tensors_dict[group["name"]]
             stored_state = self.optimizer.state.get(group['params'][0], None)
             if stored_state is not None:
@@ -424,6 +443,9 @@ class GaussianModel:
         selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
+
+        if selected_pts_mask.sum() == 0:
+            return
 
         stds = self.get_scaling[selected_pts_mask].repeat(N,1)
         means =torch.zeros((stds.size(0), 3),device="cuda")
