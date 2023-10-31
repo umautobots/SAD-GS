@@ -60,7 +60,13 @@ class Camera(nn.Module):
             self.pose_tensor_gt = self.transform_to_tensor(_world_view_transform_gt)
 
         _world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale)).cuda()
-        self.pose_tensor = self.transform_to_tensor(_world_view_transform).requires_grad_(True)
+        self.pose_tensor = self.transform_to_tensor(_world_view_transform)
+        
+        # # add noise to rot !!!!!!!!!!!!!!!!!!
+        # torch.manual_seed(0)
+        # self.pose_tensor[3:] += torch.rand(3).cuda() * 0.2
+
+        self.pose_tensor.requires_grad_(True)
 
         ### define optimizer ###
         l = [{'params': [self.pose_tensor], 'lr': 0.005, "name": "pose"}] # 0.005
@@ -69,15 +75,22 @@ class Camera(nn.Module):
         #      {'params': [self.full_proj_transform], 'lr': 0.001, "name": "projmat"}]
         self.optimizer = torch.optim.Adam(l)
 
-        self.xyz_scheduler_args = get_expon_lr_func(lr_init=0.1,
-                                                    lr_final=0.02,
+        # loc w/ color loss
+        # self.pose_scheduler_args = get_expon_lr_func(lr_init=0.1,
+        #                                             lr_final=0.02,
+        #                                             lr_delay_mult=0.01,
+        #                                             max_steps=300)
+        
+        self.pose_scheduler_args = get_expon_lr_func(lr_init=0.02,
+                                                    lr_final=0.002,
                                                     lr_delay_mult=0.01,
                                                     max_steps=300)
+        
     def update_learning_rate(self, iteration):
         ''' Learning rate scheduling per step '''
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "pose":
-                lr = self.xyz_scheduler_args(iteration)
+                lr = self.pose_scheduler_args(iteration)
                 param_group['lr'] = lr
                 return lr
             

@@ -47,6 +47,7 @@ class SceneInfo(NamedTuple):
     test_cameras: list
     nerf_normalization: dict
     ply_path: str
+    gaussian_splat: dict
 
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
@@ -303,7 +304,7 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
                            ply_path=ply_path)
     return scene_info
 
-def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_id=None):
+def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_id=None, ndt_init_voxel_size=None):
     traj_file = os.path.join(path, 'traj.txt')
     with open(traj_file, 'r') as poses_file:
         poses = poses_file.readlines()
@@ -361,8 +362,11 @@ def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_fra
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
     ply_path = os.path.join(path, "points3d.ply")
+    npy_path = os.path.join(path, "gs.npy")
     if not os.path.exists(ply_path):
         for idx, (image_path, depth_path) in enumerate(zip(image_paths, depth_paths)):
+            if (single_frame_id is not None) and (idx is not single_frame_id):
+                continue
             mat = np.array(poses[idx].split('\n')[0].split(' ')).reshape((4,4)).astype('float64')
             image = Image.open(image_path)
             depth = Image.open(depth_path)
@@ -376,34 +380,62 @@ def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_fra
             dist = np.linalg.norm(np.asarray(o3d_pc.points), axis=1)
 
             o3d_pc = o3d_pc.transform(mat)
-            pc_init = np.concatenate((pc_init, np.asarray(o3d_pc.points)[::20]), axis=0)
-            color_init = np.concatenate((color_init, np.asarray(o3d_pc.colors)[::20]), axis=0)
+            # uniformly downsample the pointcloud
+            uniform_sample = 1
+            pc_init = np.concatenate((pc_init, np.asarray(o3d_pc.points)[::uniform_sample]), axis=0)
+            color_init = np.concatenate((color_init, np.asarray(o3d_pc.colors)[::uniform_sample]), axis=0)
 
         num_pts = pc_init.shape[0]
         xyz = pc_init
 
         # color_init = np.ones_like(color_init) # !!! initialize all color to white for viz
-
         pcd = BasicPointCloud(points=xyz, colors=color_init, normals=np.zeros((num_pts, 3)))
         storePly(ply_path, pc_init, color_init*255)
+        print('save pcd')
     try:
         pcd = fetchPly(ply_path)
     except:
         pcd = None
 
-    for mat in mat_list:
-        axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-        axis_mesh.scale(0.1, center=axis_mesh.get_center())
-        mesh = axis_mesh.transform(mat)
-        viz_list.append(mesh)
+    if ndt_init_voxel_size is not None and not os.path.exists(npy_path):
+        import time
+        mean_list, var_list, color_list = [], [], []
+        o3d_pcd = o3d.geometry.PointCloud()
+        o3d_pcd.points = o3d.utility.Vector3dVector(pcd.points)
+        o3d_pcd.colors = o3d.utility.Vector3dVector(pcd.colors)
+        tic = time.time()
+        voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(o3d_pcd, voxel_size=ndt_init_voxel_size)
+        # viz_list.append(voxel_grid)
+        segmented_pcds, segmented_colors = segment_point_cloud(voxel_grid, o3d_pcd, voxel_size=ndt_init_voxel_size)
+        for i in range(len(segmented_pcds)):
+            mean_list.append(np.mean(segmented_pcds[i], axis=0))
+            var_list.append(np.var(segmented_pcds[i], axis=0))
+            color_list.append(segmented_colors[i])
+        gaussian_splat={"mean": mean_list, "var": var_list, "color": color_list}
+        toc = time.time()
+        print('======================')
+        print('voxelize initilization time: ', toc-tic)
+        print('======================')
+    #     np.save(npy_path, gaussian_splat)
+    #     print('save gaussian_splat')
+    # try:
+    #     gaussian_splat = np.load(npy_path, allow_pickle=True).item()
+    # except:
+    #     gaussian_splat = None
 
-    o3d_pcd = o3d.geometry.PointCloud()
-    o3d_pcd.points = o3d.utility.Vector3dVector(pc_init)  
-    o3d_pcd.colors = o3d.utility.Vector3dVector(color_init)    
-    viz_list.append(o3d_pcd)
+    # for mat in mat_list:
+    #     axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
+    #     axis_mesh.scale(0.1, center=axis_mesh.get_center())
+    #     mesh = axis_mesh.transform(mat)
+    #     viz_list.append(mesh)
 
-    axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-    viz_list.append(axis_mesh)
+    # o3d_pcd = o3d.geometry.PointCloud()
+    # o3d_pcd.points = o3d.utility.Vector3dVector(pc_init)  
+    # o3d_pcd.colors = o3d.utility.Vector3dVector(color_init)    
+    # viz_list.append(o3d_pcd)
+
+    # axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
+    # viz_list.append(axis_mesh)
 
     # axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
     # mesh = axis_mesh.translate((1,0,0))
@@ -416,7 +448,8 @@ def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_fra
                            train_cameras=train_cam_infos,
                            test_cameras=test_cam_infos,
                            nerf_normalization=nerf_normalization,
-                           ply_path=ply_path)
+                           ply_path=ply_path,
+                           gaussian_splat=gaussian_splat)
     return scene_info
 
 sceneLoadTypeCallbacks = {
@@ -424,3 +457,16 @@ sceneLoadTypeCallbacks = {
     "Blender" : readNerfSyntheticInfo,
     "Replica" : readReplicaInfo
 }
+
+def segment_point_cloud(voxel_grid, pcd, voxel_size):
+    pcd_points = np.asarray(pcd.points)
+    voxels = voxel_grid.get_voxels()
+    segmented_pcds, segmented_colors = [], []
+    for i in range(len(voxels)):
+        index = voxels[i].grid_index
+        color = voxels[i].color
+        center = voxel_grid.get_voxel_center_coordinate(index)
+        mask = np.all(np.abs(pcd_points - center) < voxel_size / 2, axis=1)
+        segmented_pcds.append(pcd_points[mask])
+        segmented_colors.append(color)
+    return segmented_pcds, segmented_colors

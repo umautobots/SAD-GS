@@ -1,3 +1,31 @@
+
+
+Depth-supervision
+```shell
+python train.py -s data/replica/office0 --save_iterations 10000 --iterations 10000 --DS
+```
+
+Joint optimize GS and poses
+```shell
+python train.py -s data/replica/office0 --save_iterations 10000 --iterations 10000 --pose_trans_noise 0.3 --BA
+```
+
+Building GS map
+```shell
+python train.py -s data/replica/office0 --save_iterations 10000 20000 30000 --iterations 30000 --save_checkpoint 10000 20000 30000
+```
+
+Localizing a frame
+```shell
+python train.py -s data/replica/office0 --iterations 30200 --start_checkpoint ~/gaussian-splatting/output/<MAP_EXP_NAME>/chkpnt30000.pth --pose_trans_noise 0.3 --localization --single_frame_id 80
+```
+
+Test ndt init
+```shell
+python train.py -s data/replica/office0 --save_iterations 1 500 1000 2000 3000 --iterations 5000 -m ./output/testing --DS --ndt_init_voxel_size 0.2 --single_frame_id 0 --wandb
+```
+
+
 # 3D Gaussian Splatting for Real-Time Radiance Field Rendering
 Bernhard Kerbl*, Georgios Kopanas*, Thomas Leimkühler, George Drettakis (* indicates equal contribution)<br>
 | [Webpage](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/) | [Full Paper](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/3d_gaussian_splatting_high.pdf) | [Video](https://youtu.be/T_kXY43VZnk) | [Other GRAPHDECO Publications](http://www-sop.inria.fr/reves/publis/gdindex.php) | [FUNGRAPH project page](https://fungraph.inria.fr) |<br>

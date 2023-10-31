@@ -25,6 +25,12 @@ from arguments import ModelParams, PipelineParams, OptimizationParams
 
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
+import time
+import wandb
+import nvidia_smi
+
+nvidia_smi.nvmlInit()
+deviceCount = nvidia_smi.nvmlDeviceGetCount()
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -36,7 +42,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
-    scene = Scene(dataset, gaussians, pose_trans_noise=args.pose_trans_noise, single_frame_id=args.single_frame_id)
+    scene = Scene(dataset, gaussians, pose_trans_noise=args.pose_trans_noise, single_frame_id=args.single_frame_id, ndt_init_voxel_size=args.ndt_init_voxel_size)
     gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
@@ -52,7 +58,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ema_loss_for_log = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
-    for iteration in range(first_iter, opt.iterations + 1):        
+    total_computing_time = 0
+    for iteration in range(first_iter, opt.iterations + 1):
+        tic=time.time()
+        wandb_logs = {}        
         if network_gui.conn == None:
             network_gui.try_connect()
         while network_gui.conn != None:
@@ -87,28 +96,49 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             pipe.debug = True
 
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
-        image, viewspace_point_tensor, visibility_filter, radii, depth = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"], render_pkg["depth"]
+        image, viewspace_point_tensor, visibility_filter, radii, depth, depth_var = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"], render_pkg["depth"], render_pkg["depth_var"]
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
+        
+        loss = 0
+
         color_loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
-        loss = color_loss
+        if not args.no_color_loss:
+            loss += color_loss
 
         gt_depth = gt_depth / 6553.5 * 255.0
+        depth = torch.clone(depth)
         depth[0][gt_depth == 0] = 0
         lambda_depth = 1
         depth_loss = l1_loss(depth, gt_depth) * lambda_depth
         if args.DS:
             loss += depth_loss
+        
+        # depth var loss 
+        lambda_depth_var = 1 #0.1
+        depth_var[0][gt_depth == 0] = 0
+        # depth_var_loss = torch.mean(depth_var) * lambda_depth_var
+        # loss += depth_var_loss
 
         ### viz ###
-        # if iteration > 1000 and iteration % 100 == 0:
+        # if iteration:
         #     f, axarr = plt.subplots(1,2)
-        #     axarr[0].imshow(torch.squeeze(gt_depth).cpu().detach().numpy(), vmax=3)
-        #     axarr[1].imshow(torch.squeeze(depth).cpu().detach().numpy(), vmax=3)
-        #     # plt.show()
-        #     plt.savefig('./fig/'+f'{iteration}'+'.png')
+        #     gt_image_np = torch.permute(gt_image, (1, 2, 0)).cpu().detach().numpy()
+        #     render_image_np = torch.permute(image, (1, 2, 0)).cpu().detach().numpy()
+        #     axarr[0].imshow(gt_image_np)
+        #     axarr[1].imshow(render_image_np)
+        #     plt.show()
+
+        # if iteration > 1000 and iteration % 10 == 0:
+        #     f, axarr = plt.subplots(1,3)
+        #     axarr[0].imshow(torch.squeeze(gt_depth).cpu().detach().numpy(), vmax=3, cmap='jet')
+        #     axarr[1].imshow(torch.squeeze(depth).cpu().detach().numpy(), vmax=3, cmap='jet')
+        #     axarr[2].imshow(torch.squeeze(depth_var).cpu().detach().numpy(), cmap='jet')
+        #     plt.show()
+        #     # plt.savefig('./fig/'+f'{iteration}'+'.png')
+
         # if iteration % 10 == 0:
         #     gt_image_np = torch.permute(gt_image, (1, 2, 0)).cpu().detach().numpy()
         #     render_image_np = torch.permute(image, (1, 2, 0)).cpu().detach().numpy()
@@ -117,8 +147,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         #     if not os.path.exists('./fig/tmp/'):
         #         os.mkdir('./fig/tmp/')
         #     plt.savefig('./fig/tmp/'+f'{iteration}'+'.png')
+        #     print('save fig')
 
-        loss.backward(retain_graph=True)
+        if args.localization or args.BA:
+            loss.backward(retain_graph=True)
+        else:
+            loss.backward()
 
         iter_end.record()
 
@@ -131,11 +165,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration == opt.iterations:
                 progress_bar.close()
 
+            toc = time.time()
+            total_computing_time += toc-tic
             # Log and save
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
+            tic = time.time()
 
             # Densification
             if iteration < opt.densify_until_iter:
@@ -160,11 +197,34 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 viewpoint_cam.optimizer.step()
                 viewpoint_cam.optimizer.zero_grad(set_to_none = True)
                 viewpoint_cam.update_learning_rate(iteration)
-                # save_poses(iteration, scene.model_path, scene.getTrainCameras().copy())
-
+            
+            toc = time.time()
+            total_computing_time += toc-tic
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+
+        # Plot with wandb
+        wandb_logs['loss'] = loss.item()
+        wandb_logs['color_loss'] = color_loss.item()
+        wandb_logs['depth_loss'] = depth_loss.item()
+        # wandb_logs['depth_var_loss'] = depth_var_loss.item()
+
+        wandb_logs['t'] = total_computing_time
+        wandb_logs['num_gaussian'] = gaussians._xyz.shape[0]
+        for param_group in gaussians.optimizer.param_groups:
+            if param_group["name"] == "pose":
+                wandb_logs['pose_lr'] = param_group['lr']
+
+        device_id = int(str(loss.device)[-1])
+        handle = nvidia_smi.nvmlDeviceGetHandleByIndex(device_id)
+        info = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
+        # print("Device {}: {}, Memory : ({:.2f}% free): {}(total), {} (free), {} (used)".format(i, nvidia_smi.nvmlDeviceGetName(handle), 100*info.free/info.total, info.total, info.free, info.used))
+        wandb_logs['gpu'] = info.used / (1024**2 * 1000) # Gb
+
+        if iteration % 10 == 0:
+            wandb.log(wandb_logs, commit=False)
+        wandb.log({}, commit=True)
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -255,15 +315,29 @@ if __name__ == "__main__":
     parser.add_argument("--start_checkpoint", type=str, default = None)
 
     parser.add_argument('--pose_trans_noise', type=float, default=0.0)
+    parser.add_argument("--no_color_loss", action="store_true", default=False)
     parser.add_argument("--DS", action="store_true", default=False)
     parser.add_argument("--BA", action="store_true", default=False)
+    parser.add_argument('--ndt_init_voxel_size', type=float, default=None)
     parser.add_argument("--localization", action="store_true", default=False)
     parser.add_argument('--single_frame_id', type=int, default=None)
+    parser.add_argument('--wandb', action="store_true", default=False)
+
 
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     
     print("Optimizing " + args.model_path)
+
+    wandb.login()
+    if args.wandb:
+        wandb_mode='online'
+    else:
+        wandb_mode='disabled'
+    notes = ""
+    cfg=""
+    name=args.model_path.split('/')[-1]
+    run = wandb.init(project='gaussian_splatting', name=name, config=cfg, save_code=True, notes=notes, mode=wandb_mode)
 
     # Initialize system state (RNG)
     safe_state(args.quiet)
@@ -272,6 +346,8 @@ if __name__ == "__main__":
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args)
+
+    nvidia_smi.nvmlShutdown()
 
     # All done
     print("\nTraining complete.")

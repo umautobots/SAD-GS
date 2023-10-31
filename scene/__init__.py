@@ -22,7 +22,7 @@ class Scene:
 
     gaussians : GaussianModel
 
-    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0], pose_trans_noise=0, single_frame_id=None):
+    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0], pose_trans_noise=0, single_frame_id=None, ndt_init_voxel_size=None):
         """b
         :param path: Path to colmap scene main folder.
         """
@@ -47,7 +47,7 @@ class Scene:
             scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.eval)
         elif os.path.exists(os.path.join(args.source_path, "traj.txt")):
             print("Found traj.txt file, assuming Replica data set!")
-            scene_info = sceneLoadTypeCallbacks["Replica"](args.source_path, args.eval, pose_trans_noise=pose_trans_noise, single_frame_id=single_frame_id)
+            scene_info = sceneLoadTypeCallbacks["Replica"](args.source_path, args.eval, pose_trans_noise=pose_trans_noise, single_frame_id=single_frame_id, ndt_init_voxel_size=ndt_init_voxel_size)
         else:
             assert False, "Could not recognize scene type!"
 
@@ -83,7 +83,10 @@ class Scene:
                                                            "iteration_" + str(self.loaded_iter),
                                                            "point_cloud.ply"))
         else:
-            self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
+            if scene_info.gaussian_splat is not None:
+                self.gaussians.create_from_gs(scene_info.gaussian_splat, self.cameras_extent)
+            else:
+                self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
 
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
