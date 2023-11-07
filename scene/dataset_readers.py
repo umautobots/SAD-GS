@@ -378,6 +378,13 @@ def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_fra
             o3d_pc = o3d_pc.transform(mat)
             pc_init = np.concatenate((pc_init, np.asarray(o3d_pc.points)[::20]), axis=0)
             color_init = np.concatenate((color_init, np.asarray(o3d_pc.colors)[::20]), axis=0)
+        # downsample
+        o3d_pcd = o3d.geometry.PointCloud()
+        o3d_pcd.points = o3d.utility.Vector3dVector(pc_init)
+        o3d_pcd.colors = o3d.utility.Vector3dVector(color_init)
+        o3d_pcd = o3d_pcd.voxel_down_sample(0.2)
+        pc_init = np.asarray(o3d_pcd.points)
+        color_init = np.asarray(o3d_pcd.colors)
 
         num_pts = pc_init.shape[0]
         xyz = pc_init
@@ -388,22 +395,23 @@ def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_fra
         storePly(ply_path, pc_init, color_init*255)
     try:
         pcd = fetchPly(ply_path)
+        print('read: ', pcd.points.shape)
     except:
         pcd = None
 
-    for mat in mat_list:
-        axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-        axis_mesh.scale(0.1, center=axis_mesh.get_center())
-        mesh = axis_mesh.transform(mat)
-        viz_list.append(mesh)
+    # for mat in mat_list:
+    #     axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
+    #     axis_mesh.scale(0.1, center=axis_mesh.get_center())
+    #     mesh = axis_mesh.transform(mat)
+    #     viz_list.append(mesh)
 
-    o3d_pcd = o3d.geometry.PointCloud()
-    o3d_pcd.points = o3d.utility.Vector3dVector(pc_init)  
-    o3d_pcd.colors = o3d.utility.Vector3dVector(color_init)    
-    viz_list.append(o3d_pcd)
+    # o3d_pcd = o3d.geometry.PointCloud()
+    # o3d_pcd.points = o3d.utility.Vector3dVector(pc_init)  
+    # o3d_pcd.colors = o3d.utility.Vector3dVector(color_init)    
+    # viz_list.append(o3d_pcd)
 
-    axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-    viz_list.append(axis_mesh)
+    # axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
+    # viz_list.append(axis_mesh)
 
     # axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
     # mesh = axis_mesh.translate((1,0,0))

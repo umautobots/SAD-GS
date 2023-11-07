@@ -22,7 +22,7 @@ from ..utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
 from ..utils.graphics_utils import BasicPointCloud
 from ..utils.general_utils import strip_symmetric, build_scaling_rotation
-
+from scipy.spatial.transform import Rotation
 
 class GaussianModel:
 
@@ -168,7 +168,110 @@ class GaussianModel:
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
+        # opacities = inverse_sigmoid(1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda")) #### !!!!! just for debugging
         opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
+
+        N_old = self._xyz.shape[0]
+
+        dist_to_existing_points = torch.cdist(fused_point_cloud, self._xyz).min(dim=1)[0]
+        keep_mask = dist_to_existing_points > voxel_size 
+        print(f"jk, actually only adding {keep_mask.sum()} gaussians")
+
+        N_new = N_old + keep_mask.sum()
+
+        def update_param(old_data: torch.Tensor, new_data: torch.Tensor):
+            new_data.requires_grad_(True)
+            new_data = new_data.to(old_data)[keep_mask]
+
+            output_data = torch.zeros((N_new, *old_data.shape[1:])).to(old_data)
+            output_data[:N_old] = old_data
+            output_data[N_old:] = new_data
+            return nn.Parameter(output_data)
+        
+        self._xyz = update_param(self._xyz, fused_point_cloud)
+        self._features_dc = update_param(self._features_dc, features[:,:,0:1].transpose(1, 2).contiguous())
+        self._features_rest = update_param(self._features_rest, features[:,:,1:].transpose(1, 2).contiguous())
+        self._scaling = update_param(self._scaling, scales)
+        self._rotation = update_param(self._rotation, rots)
+        self._opacity = update_param(self._opacity, opacities)
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+
+    def create_from_gs(self, means, colors, covs, spatial_lr_scale : float):
+        self.spatial_lr_scale = spatial_lr_scale
+        fused_point_cloud = means.float().cuda()
+        fused_color = RGB2SH(colors.float().cuda())
+        features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+        features[:, :3, 0 ] = fused_color
+        features[:, 3:, 1:] = 0.0
+
+        print("Number of points at initialisation : ", fused_point_cloud.shape[0])
+
+        U, S, V = torch.svd(covs)
+
+        ### isotropic ###
+        # dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
+        # scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
+        ### sampled ###
+        # var = torch.cat((covs[:,0,0].unsqueeze(1), covs[:,1,1].unsqueeze(1), covs[:,2,2].unsqueeze(1)), 1)
+        init_scale = 2. #2.
+        scales = torch.log(torch.sqrt(S)*init_scale).float().cuda()
+
+        ### isotropic ###
+        # opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
+        ### sampled ###
+        init_opa = 1. #1.
+        opacities = inverse_sigmoid(init_opa * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
+        
+        ### isotropic ###
+        # rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
+        # rots[:, 0] = 1
+        ### sampled ###
+        rotations = Rotation.from_matrix(U.cpu())
+        quaternions = torch.tensor(rotations.as_quat())
+        rots = torch.index_select(quaternions, 1, torch.LongTensor([3,0,1,2])).float().to('cuda')
+
+        self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
+        self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
+        self._features_rest = nn.Parameter(features[:,:,1:].transpose(1, 2).contiguous().requires_grad_(True))
+        self._scaling = nn.Parameter(scales.requires_grad_(True))
+        self._rotation = nn.Parameter(rots.requires_grad_(True))
+        self._opacity = nn.Parameter(opacities.requires_grad_(True))
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+    
+    def add_from_gs(self, means, colors, covs, spatial_lr_scale: float, voxel_size):
+        assert spatial_lr_scale == self.spatial_lr_scale
+        
+        fused_point_cloud = means.float().cuda()
+        fused_color = RGB2SH(colors.float().cuda())
+        features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+        features[:, :3, 0 ] = fused_color
+        features[:, 3:, 1:] = 0.0
+
+        print(f"Adding {fused_point_cloud.shape[0]} gaussians")
+
+        U, S, V = torch.svd(covs)
+
+        ### isotropic ###
+        # dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
+        # scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
+        ### sampled ###
+        var = torch.cat((covs[:,0,0].unsqueeze(1), covs[:,1,1].unsqueeze(1), covs[:,2,2].unsqueeze(1)), 1)
+        init_scale = 2.
+        scales = torch.log(torch.sqrt(S)*init_scale).float().cuda()
+
+        ### isotropic ###
+        # opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
+        ### sampled ###
+        init_opa = 0.1
+        opacities = inverse_sigmoid(init_opa * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
+
+        ### isotropic ###
+        # rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
+        # rots[:, 0] = 1
+        ### sampled ###
+        rotations = Rotation.from_matrix(U.cpu())
+        quaternions = torch.tensor(rotations.as_quat())
+        rots = torch.index_select(quaternions, 1, torch.LongTensor([3,0,1,2])).float().to('cuda')
 
         N_old = self._xyz.shape[0]
 
@@ -245,6 +348,27 @@ class GaussianModel:
                                                     lr_final=training_args.position_lr_final*self.spatial_lr_scale,
                                                     lr_delay_mult=training_args.position_lr_delay_mult,
                                                     max_steps=training_args.position_lr_max_steps)
+
+        # self.pose_scheduler_args = get_expon_lr_func(lr_init=training_args.pose_lr_init,
+        #                                             lr_final=training_args.pose_lr_final,
+        #                                             lr_delay_mult=training_args.pose_lr_delay_mult,
+        #                                             max_steps=training_args.pose_lr_max_steps)
+
+        self.pose_scheduler_args = get_expon_lr_func(lr_init=0.001,
+                                                    lr_final=0.001,
+                                                    lr_delay_mult=0.01,
+                                                    max_steps=300)
+        
+    def update_pose_learning_rate(self, iteration, joint_optimization):
+        ''' Learning rate scheduling per step '''
+        for param_group in self.optimizer.param_groups:
+            if param_group["name"] == "poses":
+                lr = self.pose_scheduler_args(iteration)
+                if joint_optimization:
+                    param_group['lr'] = 0.001 # fix lr for joint opt !!!!!!
+                else:
+                    param_group['lr'] = lr
+                return lr
 
     def update_learning_rate(self, iteration):
         ''' Learning rate scheduling per step '''
