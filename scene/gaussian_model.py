@@ -23,6 +23,8 @@ from simple_knn._C import distCUDA2
 from ..utils.graphics_utils import BasicPointCloud
 from ..utils.general_utils import strip_symmetric, build_scaling_rotation
 from scipy.spatial.transform import Rotation
+import torch_cluster
+import pytorch3d.transforms
 
 class GaussianModel:
 
@@ -206,7 +208,7 @@ class GaussianModel:
 
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
-        U, S, V = torch.svd(covs)
+        U, S, Vt = torch.svd(covs)
 
         ### isotropic ###
         # dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
@@ -226,9 +228,8 @@ class GaussianModel:
         # rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         # rots[:, 0] = 1
         ### sampled ###
-        rotations = Rotation.from_matrix(U.cpu())
-        quaternions = torch.tensor(rotations.as_quat())
-        rots = torch.index_select(quaternions, 1, torch.LongTensor([3,0,1,2])).float().to('cuda')
+        U[:,:,2] = U[:,:,2] * torch.linalg.det(U).unsqueeze(1)
+        rots = pytorch3d.transforms.matrix_to_quaternion(U)
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
@@ -275,7 +276,10 @@ class GaussianModel:
 
         N_old = self._xyz.shape[0]
 
-        dist_to_existing_points = torch.cdist(fused_point_cloud, self._xyz).min(dim=1)[0]
+        knn = torch_cluster.knn(self._xyz, fused_point_cloud, 1)
+        nn_matches = self._xyz[knn[1]]
+        dist_to_existing_points = torch.linalg.norm(fused_point_cloud - nn_matches, dim=1)
+        # dist_to_existing_points = torch.cdist(fused_point_cloud, self._xyz).min(dim=1)[0]
         keep_mask = dist_to_existing_points > voxel_size 
         print(f"jk, actually only adding {keep_mask.sum()} gaussians")
 
