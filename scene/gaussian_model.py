@@ -270,9 +270,8 @@ class GaussianModel:
         # rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         # rots[:, 0] = 1
         ### sampled ###
-        rotations = Rotation.from_matrix(U.cpu())
-        quaternions = torch.tensor(rotations.as_quat())
-        rots = torch.index_select(quaternions, 1, torch.LongTensor([3,0,1,2])).float().to('cuda')
+        U[:,:,2] = U[:,:,2] * torch.linalg.det(U).unsqueeze(1)
+        rots = pytorch3d.transforms.matrix_to_quaternion(U)
 
         N_old = self._xyz.shape[0]
 
