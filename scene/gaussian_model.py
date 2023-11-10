@@ -253,33 +253,22 @@ class GaussianModel:
 
         U, S, V = torch.svd(covs)
 
-        ### isotropic ###
-        # dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
-        # scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
-        ### sampled ###
-        var = torch.cat((covs[:,0,0].unsqueeze(1), covs[:,1,1].unsqueeze(1), covs[:,2,2].unsqueeze(1)), 1)
         init_scale = 2.
         scales = torch.log(torch.sqrt(S)*init_scale).float().cuda()
 
-        ### isotropic ###
-        # opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
-        ### sampled ###
         init_opa = 0.1
         opacities = inverse_sigmoid(init_opa * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
 
-        ### isotropic ###
-        # rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
-        # rots[:, 0] = 1
-        ### sampled ###
         U[:,:,2] = U[:,:,2] * torch.linalg.det(U).unsqueeze(1)
         rots = pytorch3d.transforms.matrix_to_quaternion(U)
 
         N_old = self._xyz.shape[0]
 
+        # This uses much less memory than torch.cdist, which crashes for large clouds
         knn = torch_cluster.knn(self._xyz, fused_point_cloud, 1)
         nn_matches = self._xyz[knn[1]]
         dist_to_existing_points = torch.linalg.norm(fused_point_cloud - nn_matches, dim=1)
-        # dist_to_existing_points = torch.cdist(fused_point_cloud, self._xyz).min(dim=1)[0]
+
         keep_mask = dist_to_existing_points > voxel_size 
         print(f"jk, actually only adding {keep_mask.sum()} gaussians")
 
