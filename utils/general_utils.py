@@ -72,6 +72,19 @@ def strip_lowerdiag(L):
     uncertainty[:, 5] = L[:, 2, 2]
     return uncertainty
 
+def from_lowerdiag(uncertainty):
+    cov = torch.zeros((uncertainty.shape[0], 3, 3), dtype=torch.float, device="cuda")
+    cov[:,0,0] = uncertainty[:, 0]
+    cov[:,0,1] = uncertainty[:, 1]
+    cov[:,0,2] = uncertainty[:, 2]
+    cov[:,1,0] = uncertainty[:, 1]
+    cov[:,1,1] = uncertainty[:, 3]
+    cov[:,1,2] = uncertainty[:, 4]
+    cov[:,2,0] = uncertainty[:, 2]
+    cov[:,2,1] = uncertainty[:, 4]
+    cov[:,2,2] = uncertainty[:, 5]
+    return cov
+
 def strip_symmetric(sym):
     return strip_lowerdiag(sym)
 
