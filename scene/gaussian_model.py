@@ -61,6 +61,7 @@ class GaussianModel:
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
+        self.pose_lr_joint = 0
         self.setup_functions()
 
     def capture(self):
@@ -328,7 +329,7 @@ class GaussianModel:
             ]
 
         if optimizable_poses is not None:
-            param_groups.append((optimizable_poses, training_args.poses_lr, "poses"))
+            param_groups.append((optimizable_poses, training_args.pose_lr_init, "poses"))
 
         l = []
         for p in param_groups:
@@ -352,15 +353,17 @@ class GaussianModel:
                                                     lr_delay_mult=training_args.position_lr_delay_mult,
                                                     max_steps=training_args.position_lr_max_steps)
 
-        # self.pose_scheduler_args = get_expon_lr_func(lr_init=training_args.pose_lr_init,
-        #                                             lr_final=training_args.pose_lr_final,
-        #                                             lr_delay_mult=training_args.pose_lr_delay_mult,
-        #                                             max_steps=training_args.pose_lr_max_steps)
+        self.pose_scheduler_args = get_expon_lr_func(lr_init=training_args.pose_lr_init,
+                                                    lr_final=training_args.pose_lr_final,
+                                                    lr_delay_mult=training_args.pose_lr_delay_mult,
+                                                    max_steps=training_args.pose_lr_max_steps)
 
-        self.pose_scheduler_args = get_expon_lr_func(lr_init=0.001,
-                                                    lr_final=0.001,
-                                                    lr_delay_mult=0.01,
-                                                    max_steps=300)
+        self.pose_lr_joint = training_args.pose_lr_joint
+
+        # self.pose_scheduler_args = get_expon_lr_func(lr_init=0.01,
+        #                                             lr_final=0.001,
+        #                                             lr_delay_mult=0.01,
+        #                                             max_steps=200)
         
     def update_pose_learning_rate(self, iteration, joint_optimization):
         ''' Learning rate scheduling per step '''
@@ -368,7 +371,7 @@ class GaussianModel:
             if param_group["name"] == "poses":
                 lr = self.pose_scheduler_args(iteration)
                 if joint_optimization:
-                    param_group['lr'] = 0.001 # fix lr for joint opt !!!!!!
+                    param_group['lr'] = self.pose_lr_joint
                 else:
                     param_group['lr'] = lr
                 return lr
