@@ -1,3 +1,7 @@
+############################################################
+# This file is not up-to-date please use examples/train.py 
+############################################################
+
 #
 # Copyright (C) 2023, Inria
 # GRAPHDECO research group, https://team.inria.fr/graphdeco

@@ -25,6 +25,8 @@ from .gaussian_model import BasicPointCloud
 import imageio
 import glob
 import open3d as o3d
+import torch
+from .initialize_utils import precompute_gaussians
 
 class CameraInfo(NamedTuple):
     uid: int
@@ -47,6 +49,7 @@ class SceneInfo(NamedTuple):
     test_cameras: list
     nerf_normalization: dict
     ply_path: str
+    gaussian_init: dict
 
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
@@ -69,6 +72,9 @@ def getNerfppNorm(cam_info):
 
     translate = -center
 
+    if len(cam_info)==1:
+        radius = 30
+        print('single frame training. Set radius to: ', radius)
     return {"translate": translate, "radius": radius}
 
 def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, depths_folder):
@@ -303,7 +309,7 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
                            ply_path=ply_path)
     return scene_info
 
-def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_id=None):
+def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_id=None, voxel_size=None, init_w_gaussian=False):
     traj_file = os.path.join(path, 'traj.txt')
     with open(traj_file, 'r') as poses_file:
         poses = poses_file.readlines()
@@ -363,6 +369,8 @@ def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_fra
     ply_path = os.path.join(path, "points3d.ply")
     if not os.path.exists(ply_path):
         for idx, (image_path, depth_path) in enumerate(zip(image_paths, depth_paths)):
+            if (single_frame_id is not None) and (idx is not single_frame_id):
+                continue
             mat = np.array(poses[idx].split('\n')[0].split(' ')).reshape((4,4)).astype('float64')
             image = Image.open(image_path)
             depth = Image.open(depth_path)
@@ -378,19 +386,10 @@ def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_fra
             o3d_pc = o3d_pc.transform(mat)
             pc_init = np.concatenate((pc_init, np.asarray(o3d_pc.points)[::20]), axis=0)
             color_init = np.concatenate((color_init, np.asarray(o3d_pc.colors)[::20]), axis=0)
-        # downsample
-        o3d_pcd = o3d.geometry.PointCloud()
-        o3d_pcd.points = o3d.utility.Vector3dVector(pc_init)
-        o3d_pcd.colors = o3d.utility.Vector3dVector(color_init)
-        o3d_pcd = o3d_pcd.voxel_down_sample(0.2)
-        pc_init = np.asarray(o3d_pcd.points)
-        color_init = np.asarray(o3d_pcd.colors)
-
+        
         num_pts = pc_init.shape[0]
         xyz = pc_init
-
         # color_init = np.ones_like(color_init) # !!! initialize all color to white for viz
-
         pcd = BasicPointCloud(points=xyz, colors=color_init, normals=np.zeros((num_pts, 3)))
         storePly(ply_path, pc_init, color_init*255)
     try:
@@ -398,6 +397,21 @@ def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_fra
         print('read: ', pcd.points.shape)
     except:
         pcd = None
+    
+    gaussian_init = None
+    if init_w_gaussian:
+        mean_xyz, mean_rgb, cov = precompute_gaussians(torch.tensor(pcd.points).to('cuda'), torch.tensor(pcd.colors).to('cuda'), voxel_size)
+        gaussian_init={"mean_xyz": mean_xyz, "mean_rgb": mean_rgb, "cov": cov}
+    else:
+        if voxel_size is not None:
+            # downsample
+            o3d_pcd = o3d.geometry.PointCloud()
+            o3d_pcd.points = o3d.utility.Vector3dVector(pcd.points)
+            o3d_pcd.colors = o3d.utility.Vector3dVector(pcd.colors)
+            o3d_pcd = o3d_pcd.voxel_down_sample(voxel_size)
+            pc_init = np.asarray(o3d_pcd.points)
+            color_init = np.asarray(o3d_pcd.colors)
+            pcd = BasicPointCloud(points=pc_init, colors=color_init, normals=np.zeros((pc_init.shape[0], 3)))
 
     # for mat in mat_list:
     #     axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
@@ -424,7 +438,8 @@ def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_fra
                            train_cameras=train_cam_infos,
                            test_cameras=test_cam_infos,
                            nerf_normalization=nerf_normalization,
-                           ply_path=ply_path)
+                           ply_path=ply_path,
+                           gaussian_init=gaussian_init)
     return scene_info
 
 sceneLoadTypeCallbacks = {
