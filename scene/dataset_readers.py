@@ -13,18 +13,20 @@ import os
 import sys
 from PIL import Image
 from typing import NamedTuple
-from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
+from .colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
     read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text
-from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
+from ..utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
 import numpy as np
 import json
 from pathlib import Path
 from plyfile import PlyData, PlyElement
-from utils.sh_utils import SH2RGB
-from scene.gaussian_model import BasicPointCloud
+from ..utils.sh_utils import SH2RGB
+from .gaussian_model import BasicPointCloud
 import imageio
 import glob
 import open3d as o3d
+import torch
+from .initialize_utils import precompute_gaussians
 
 class CameraInfo(NamedTuple):
     uid: int
@@ -47,7 +49,7 @@ class SceneInfo(NamedTuple):
     test_cameras: list
     nerf_normalization: dict
     ply_path: str
-    gaussian_splat: dict
+    gaussian_init: dict
 
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
@@ -70,6 +72,9 @@ def getNerfppNorm(cam_info):
 
     translate = -center
 
+    if len(cam_info)==1:
+        radius = 30
+        print('single frame training. Set radius to: ', radius)
     return {"translate": translate, "radius": radius}
 
 def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, depths_folder):
@@ -304,7 +309,7 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
                            ply_path=ply_path)
     return scene_info
 
-def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_id=None, ndt_init_voxel_size=None):
+def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_id=None, voxel_size=None, init_w_gaussian=False):
     traj_file = os.path.join(path, 'traj.txt')
     with open(traj_file, 'r') as poses_file:
         poses = poses_file.readlines()
@@ -380,48 +385,35 @@ def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_fra
             dist = np.linalg.norm(np.asarray(o3d_pc.points), axis=1)
 
             o3d_pc = o3d_pc.transform(mat)
-            # uniformly downsample the pointcloud
-            uniform_sample = 1
-            pc_init = np.concatenate((pc_init, np.asarray(o3d_pc.points)[::uniform_sample]), axis=0)
-            color_init = np.concatenate((color_init, np.asarray(o3d_pc.colors)[::uniform_sample]), axis=0)
-
+            pc_init = np.concatenate((pc_init, np.asarray(o3d_pc.points)[::20]), axis=0)
+            color_init = np.concatenate((color_init, np.asarray(o3d_pc.colors)[::20]), axis=0)
+        
         num_pts = pc_init.shape[0]
         xyz = pc_init
-
         # color_init = np.ones_like(color_init) # !!! initialize all color to white for viz
         pcd = BasicPointCloud(points=xyz, colors=color_init, normals=np.zeros((num_pts, 3)))
         storePly(ply_path, pc_init, color_init*255)
         print('save pcd')
     try:
         pcd = fetchPly(ply_path)
+        print('read: ', pcd.points.shape)
     except:
         pcd = None
-
-    if ndt_init_voxel_size is not None and not os.path.exists(npy_path):
-        import time
-        mean_list, var_list, color_list = [], [], []
-        o3d_pcd = o3d.geometry.PointCloud()
-        o3d_pcd.points = o3d.utility.Vector3dVector(pcd.points)
-        o3d_pcd.colors = o3d.utility.Vector3dVector(pcd.colors)
-        tic = time.time()
-        voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(o3d_pcd, voxel_size=ndt_init_voxel_size)
-        # viz_list.append(voxel_grid)
-        segmented_pcds, segmented_colors = segment_point_cloud(voxel_grid, o3d_pcd, voxel_size=ndt_init_voxel_size)
-        for i in range(len(segmented_pcds)):
-            mean_list.append(np.mean(segmented_pcds[i], axis=0))
-            var_list.append(np.var(segmented_pcds[i], axis=0))
-            color_list.append(segmented_colors[i])
-        gaussian_splat={"mean": mean_list, "var": var_list, "color": color_list}
-        toc = time.time()
-        print('======================')
-        print('voxelize initilization time: ', toc-tic)
-        print('======================')
-    #     np.save(npy_path, gaussian_splat)
-    #     print('save gaussian_splat')
-    # try:
-    #     gaussian_splat = np.load(npy_path, allow_pickle=True).item()
-    # except:
-    #     gaussian_splat = None
+    
+    gaussian_init = None
+    if init_w_gaussian:
+        mean_xyz, mean_rgb, cov = precompute_gaussians(torch.tensor(pcd.points).to('cuda'), torch.tensor(pcd.colors).to('cuda'), voxel_size)
+        gaussian_init={"mean_xyz": mean_xyz, "mean_rgb": mean_rgb, "cov": cov}
+    else:
+        if voxel_size is not None:
+            # downsample
+            o3d_pcd = o3d.geometry.PointCloud()
+            o3d_pcd.points = o3d.utility.Vector3dVector(pcd.points)
+            o3d_pcd.colors = o3d.utility.Vector3dVector(pcd.colors)
+            o3d_pcd = o3d_pcd.voxel_down_sample(voxel_size)
+            pc_init = np.asarray(o3d_pcd.points)
+            color_init = np.asarray(o3d_pcd.colors)
+            pcd = BasicPointCloud(points=pc_init, colors=color_init, normals=np.zeros((pc_init.shape[0], 3)))
 
     # for mat in mat_list:
     #     axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
@@ -449,7 +441,7 @@ def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_fra
                            test_cameras=test_cam_infos,
                            nerf_normalization=nerf_normalization,
                            ply_path=ply_path,
-                           gaussian_splat=gaussian_splat)
+                           gaussian_init=gaussian_init)
     return scene_info
 
 sceneLoadTypeCallbacks = {

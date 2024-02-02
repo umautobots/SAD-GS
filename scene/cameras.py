@@ -12,8 +12,8 @@
 import torch
 from torch import nn
 import numpy as np
-from utils.graphics_utils import getWorld2View2, getProjectionMatrix
-from utils.general_utils import get_expon_lr_func
+from ..utils.graphics_utils import getWorld2View2, getProjectionMatrix
+from ..utils.general_utils import get_expon_lr_func
 import pytorch3d.transforms
 
 class Camera(nn.Module):
