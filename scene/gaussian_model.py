@@ -13,19 +13,20 @@ import torch
 import numpy as np
 import functools
 
-from ..utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
+from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
 from torch import nn
 import os
-from ..utils.system_utils import mkdir_p
+from utils.system_utils import mkdir_p
 from plyfile import PlyData, PlyElement
-from ..utils.sh_utils import RGB2SH
+from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
-from ..utils.graphics_utils import BasicPointCloud
-from ..utils.general_utils import strip_symmetric, build_scaling_rotation
+from utils.graphics_utils import BasicPointCloud
+from utils.general_utils import strip_symmetric, build_scaling_rotation
 from scipy.spatial.transform import Rotation
 import torch_cluster
 import pytorch3d.transforms
-from common.pose import Pose
+import sys
+# from common.pose import Pose
 
 class GaussianModel:
 
@@ -295,8 +296,8 @@ class GaussianModel:
     
     def add_noise(self, N):
         print('Add nosies !!!')
-        min_val = -2
-        max_val = 2
+        min_val = -5
+        max_val = 5
         points = (max_val - min_val) * np.random.random(size=(N,3)) + min_val
         colors = np.random.random((N, 3))
         
@@ -445,6 +446,7 @@ class GaussianModel:
         mkdir_p(os.path.dirname(path))
 
         xyz = self._xyz.detach().cpu().numpy()
+        print(xyz.shape)
         normals = np.zeros_like(xyz)
         f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
@@ -505,6 +507,8 @@ class GaussianModel:
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
+
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
         self.active_sh_degree = self.max_sh_degree
 
@@ -663,6 +667,7 @@ class GaussianModel:
             # small_points_ws = self.get_scaling.max(dim=1).values < min_scale # no min scale in original gs
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
         self.prune_points(prune_mask)
+        print("prune_points: ", prune_mask.sum().item())
 
         torch.cuda.empty_cache()
 
@@ -701,78 +706,19 @@ class GaussianModel:
         self._opacity = optimizable_tensors["opacity"]
         torch.cuda.empty_cache()
     
-    # deleting step
-    def reset_opacity_by_depth_image(self, camera_pose: Pose, projmatrix, W, H, depth, thres, gamma):
+    def reset_opacity_by_depth_image_fast(self, camera_pose, projmatrix, W, H, depth, thres, gamma, near_far):
 
         world_to_cam = camera_pose
-        cam_to_world = world_to_cam.inv()
-        viewmatrix = cam_to_world.get_transformation_matrix().to("cuda")
-        fullprojmatrix = projmatrix @ viewmatrix
-        
-        xyz = self.get_xyz
-        opa = self.get_opacity
-        cam_position = world_to_cam.get_translation().to("cuda")
-        dist = torch.norm(xyz-cam_position, dim=1)
-
-        # img = np.zeros((H, W))
-        # import matplotlib.pyplot as plt
-        count=0
-        for (i, (pts, alpha, d)) in enumerate(zip(xyz, opa, dist)):
-            pts = torch.cat((pts, torch.tensor([1]).to("cuda"))).view(-1, 1)
-            p_hom = (fullprojmatrix @ pts).view(-1)
-            p_hom = p_hom / p_hom[-1]
-
-            p_view = viewmatrix @ pts
-            
-            # NDC to img | x -> W | y -> H
-            if p_view[2] > 0: # inside FOV
-                u = ((p_hom[0].cpu().numpy() + 1.0) * W - 1.0) * 0.5
-                v = ((p_hom[1].cpu().numpy() + 1.0) * H - 1.0) * 0.5
-                u = round(u)
-                v = round(v)
-                if u>0 and v>0 and u<W and v<H:
-                    d_measured = depth[0][v,u]
-                    if (d_measured - d) > thres:
-                        opa[i] = opa[i] * gamma
-                        count+=1
-
-                    # try:
-                    #     img[v,u] = d
-                    # except:
-                    #     pass
-        
-        # # Create a sample plot
-        # f, axarr = plt.subplots(1,2, figsize=(22, 8))
-        # axarr[0].imshow(img, vmin=0.2, vmax=3, cmap='jet')
-        # axarr[1].imshow(depth[0].cpu().numpy(), vmin=0.2, vmax=3, cmap='jet')
-        # for ax in axarr.flat:
-        #     ax.set_axis_off()
-        # plt.tight_layout()
-        # plt.savefig('./debug.png')
-        # plt.close()
-
-        opacities_new = inverse_sigmoid(opa)
-        optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
-        self._opacity = optimizable_tensors["opacity"]
-
-        # import sys
-        # sys.exit()
-
-        torch.cuda.empty_cache()
-
-
-    def reset_opacity_by_depth_image_fast(self, camera_pose: Pose, projmatrix, W, H, depth, thres, gamma):
-
-        world_to_cam = camera_pose
-        cam_to_world = world_to_cam.inv()
-        viewmatrix = cam_to_world.get_transformation_matrix().to("cuda")
+        cam_to_world = torch.inverse(world_to_cam)
+        viewmatrix = cam_to_world
         fullprojmatrix = projmatrix @ viewmatrix
         
         xyz = self.get_xyz
         opa = self.get_opacity
 
-        cam_position = world_to_cam.get_translation().to("cuda")
-        dist = torch.norm(xyz-cam_position, dim=1).view(-1,1) # Nx1
+        # Use dist to camera center as depth
+        # cam_position = world_to_cam[:3,3]
+        # dist = torch.norm(xyz-cam_position, dim=1).view(-1,1) # Nx1
 
         xyz_hom = torch.cat((xyz, torch.ones((xyz.shape[0],1)).to("cuda")), axis=1) # Nx4
         p_hom = xyz_hom @ fullprojmatrix.T # Nx4
@@ -780,6 +726,8 @@ class GaussianModel:
 
         p_view = xyz_hom @ viewmatrix.T # Nx4
         mask_front = p_view[:,2] > 0 # select points in front of cam plane
+        # Use z-axis as depth
+        dist = p_view[:,2].view(-1,1)
 
         # NDC to img
         uv = p_hom[:,:2] # Nx2
@@ -790,10 +738,27 @@ class GaussianModel:
 
         dist_from_depth = torch.zeros_like((dist))
         uv = uv[mask_in_image].long()
-        dist_from_depth[mask_in_image] = depth[0][uv[:,1], uv[:,0]].view(-1,1) # Nx1
-        mask_thres = (dist_from_depth-dist > thres).view(-1)
-        mask = (mask_front & mask_in_image & mask_thres).view(-1,1)
 
+        ###
+        # print(mask_in_image.sum())
+        # img = torch.zeros_like(depth)
+
+        # for (uv_,dist_) in zip(uv, dist):
+        #     img[0][uv_[1], uv_[0]] = torch.max(dist_, img[0][uv_[1], uv_[0]])
+        # import matplotlib.pyplot as plt
+        # plt.imshow(img[0].detach().cpu().numpy(), cmap='jet')
+        # plt.show()
+        # plt.imshow(depth[0].detach().cpu().numpy(), cmap='jet')
+        # plt.show()
+        ###
+
+        dist_from_depth[mask_in_image] = depth[0][uv[:,1], uv[:,0]].view(-1,1) # Nx1
+        if near_far:
+            mask_thres = (torch.abs(dist_from_depth-dist) > thres).view(-1)
+        else:
+            mask_thres = ((dist_from_depth-dist) > thres).view(-1)
+        mask = (mask_front & mask_in_image & mask_thres).view(-1,1)
+        print('reset: ', mask.sum().item())
         # reset opacity
         opa[mask] = opa[mask] * gamma
         
@@ -803,6 +768,270 @@ class GaussianModel:
         self._opacity = optimizable_tensors["opacity"]
 
         torch.cuda.empty_cache()
+
+    def loss_by_depth_image(self, camera_pose, projmatrix, W, H, depth, raw_pc, thres, near, far):
+
+        world_to_cam = camera_pose
+        cam_to_world = torch.inverse(world_to_cam)
+        viewmatrix = cam_to_world
+        fullprojmatrix = projmatrix @ viewmatrix
+        
+        xyz = self.get_xyz
+
+        # Use dist to camera center as depth
+        # cam_position = world_to_cam[:3,3]
+        # dist = torch.norm(xyz-cam_position, dim=1).view(-1,1) # Nx1
+
+        xyz_hom = torch.cat((xyz, torch.ones((xyz.shape[0],1)).to("cuda")), axis=1) # Nx4
+        p_hom = xyz_hom @ fullprojmatrix.T # Nx4
+        p_hom = p_hom / p_hom[:,-1].view(-1,1)
+
+        p_view = xyz_hom @ viewmatrix.T # Nx4
+        mask_front = p_view[:,2] > 0 # select points in front of cam plane
+        # Use z-axis as depth
+        dist = p_view[:,2].view(-1,1)
+
+        # NDC to img
+        uv = p_hom[:,:2] # Nx2
+        uv[:,0] = ((uv[:,0] + 1.0) * W - 1.0) * 0.5
+        uv[:,1] = ((uv[:,1] + 1.0) * H - 1.0) * 0.5
+        uv = torch.round(uv)
+        mask_in_image = (uv[:, 0] >= 0) & (uv[:, 1] >= 0) & (uv[:, 0] < W) & (uv[:, 1] < H) # select points that can be projected to the image
+
+        dist_from_depth = torch.zeros_like((dist))
+        uv_in = uv[mask_in_image].long()
+
+        ###
+        print('Operating PC')
+        raw_pc = torch.tensor(raw_pc).cuda().float()
+        xyz_hom = torch.cat((raw_pc, torch.ones((raw_pc.shape[0],1)).to("cuda")), axis=1) # Nx4
+        p_hom = xyz_hom @ fullprojmatrix.T # Nx4
+        p_hom = p_hom / p_hom[:,-1].view(-1,1)
+        p_view = xyz_hom @ viewmatrix.T # Nx4
+        dist_pc = p_view[:,2].view(-1,1)
+        # NDC to img
+        uv_pc = p_hom[:,:2] # Nx2
+        uv_pc[:,0] = ((uv_pc[:,0] + 1.0) * W - 1.0) * 0.5
+        uv_pc[:,1] = ((uv_pc[:,1] + 1.0) * H - 1.0) * 0.5
+        uv_pc = torch.round(uv_pc).long()
+
+        pixels_to_points = torch.full((H, W, 3), float('nan')).cuda()
+        pixels_to_points[uv_pc[:, 1], uv_pc[:, 0]] = raw_pc[:]
+        pixels_to_dist = torch.norm(pixels_to_points, dim=2)
+
+        corr_xyz = torch.full((xyz.shape), float('nan')).cuda()
+        corr_xyz[mask_in_image][:] = pixels_to_points[uv_in[:,1], uv_in[:,0]]
+        print('corr_xyz.shape: ', corr_xyz.shape)
+        print(corr_xyz[:5])
+
+        import open3d as o3d
+        pc = o3d.geometry.PointCloud()
+        pc.points = o3d.utility.Vector3dVector(xyz.cpu().detach().numpy())
+        pc.paint_uniform_color([1,0,0])
+
+        input_pc = o3d.geometry.PointCloud()
+        input_pc.points = o3d.utility.Vector3dVector(raw_pc.cpu().detach().numpy())
+        input_pc.paint_uniform_color([0,0,1])
+
+        corr_pc = o3d.geometry.PointCloud()
+        corr_pc.points = o3d.utility.Vector3dVector(corr_xyz.cpu().detach().numpy())
+        corr_pc.paint_uniform_color([0,1,0])
+        o3d.visualization.draw_geometries([corr_pc])
+
+        # Thres Mask
+        dist_from_depth[mask_in_image] = depth[0][uv_in[:,1], uv_in[:,0]].view(-1,1) # Nx1
+        if near and far:
+            mask_thres = (torch.abs(dist_from_depth-dist) > thres).view(-1)
+        elif not near and far:
+            mask_thres = ((dist-dist_from_depth) > thres).view(-1)
+        elif near and not far:
+            mask_thres = ((dist_from_depth-dist) > thres).view(-1)
+        else:
+            sys.exit('loss_by_depth_image should have either near or far setting to True')
+
+        # mask = (mask_front & mask_in_image & mask_thres).view(-1,1)
+
+        nan_mask = torch.isnan(corr_xyz).any(dim=1)
+        valid_mask = ~nan_mask
+
+        mask = (mask_front & mask_in_image & mask_thres & valid_mask).view(-1,1)
+
+        valid_xyz = xyz[mask]
+        valid_corr_xyz = corr_xyz[mask]
+        print(valid_corr_xyz.shape)
+
+        import open3d as o3d
+
+        input_pc = o3d.geometry.PointCloud()
+        input_pc.points = o3d.utility.Vector3dVector(valid_xyz.cpu().detach().numpy())
+        input_pc.paint_uniform_color([1,0,0])
+
+        corr_pc = o3d.geometry.PointCloud()
+        corr_pc.points = o3d.utility.Vector3dVector(valid_corr_xyz.cpu().detach().numpy())
+        corr_pc.paint_uniform_color([0,1,0])
+        o3d.visualization.draw_geometries([input_pc, corr_pc])
+
+        return mask
+    
+    def mask_by_depth_image(self, camera_pose, projmatrix, W, H, depth, thres, near, far):
+
+        world_to_cam = camera_pose
+        cam_to_world = torch.inverse(world_to_cam)
+        viewmatrix = cam_to_world
+        fullprojmatrix = projmatrix @ viewmatrix
+        
+        xyz = self.get_xyz
+
+        # Use dist to camera center as depth
+        # cam_position = world_to_cam[:3,3]
+        # dist = torch.norm(xyz-cam_position, dim=1).view(-1,1) # Nx1
+
+        xyz_hom = torch.cat((xyz, torch.ones((xyz.shape[0],1)).to("cuda")), axis=1) # Nx4
+        p_hom = xyz_hom @ fullprojmatrix.T # Nx4
+        p_hom = p_hom / p_hom[:,-1].view(-1,1)
+
+        p_view = xyz_hom @ viewmatrix.T # Nx4
+        mask_front = p_view[:,2] > 0 # select points in front of cam plane
+        # Use z-axis as depth
+        dist = p_view[:,2].view(-1,1)
+
+        # NDC to img
+        uv = p_hom[:,:2] # Nx2
+        uv[:,0] = ((uv[:,0] + 1.0) * W - 1.0) * 0.5
+        uv[:,1] = ((uv[:,1] + 1.0) * H - 1.0) * 0.5
+        uv = torch.round(uv)
+        mask_in_image = (uv[:, 0] >= 0) & (uv[:, 1] >= 0) & (uv[:, 0] < W) & (uv[:, 1] < H) # select points that can be projected to the image
+
+        dist_from_depth = torch.zeros_like((dist))
+        uv = uv[mask_in_image].long()
+        dist_from_depth[mask_in_image] = depth[0][uv[:,1], uv[:,0]].view(-1,1) # Nx1
+
+        ###
+        # print(mask_in_image.sum())
+        # img = torch.zeros_like(depth)
+
+        # for (uv_,dist_) in zip(uv, dist):
+        #     img[0][uv_[1], uv_[0]] = torch.max(dist_, img[0][uv_[1], uv_[0]])
+        # import matplotlib.pyplot as plt
+        # plt.imshow(img[0].detach().cpu().numpy(), cmap='jet')
+        # plt.show()
+        # plt.imshow(depth[0].detach().cpu().numpy(), cmap='jet')
+        # plt.show()
+        ###
+
+        if near and far:
+            mask_thres = (torch.abs(dist_from_depth-dist) > thres).view(-1)
+        elif not near and far:
+            mask_thres = ((dist-dist_from_depth) > thres).view(-1)
+        elif near and not far:
+            mask_thres = ((dist_from_depth-dist) > thres).view(-1)
+        else:
+            sys.exit('mask_by_depth_image should have either near or far setting to True')
+
+        mask = (mask_front & mask_in_image & mask_thres).view(-1,1)
+        return mask
+        
+        # print('reset: ', mask.sum().item())
+        # # reset opacity
+        # opa[mask] = opa[mask] * gamma
+        
+        # # update
+        # opacities_new = inverse_sigmoid(opa)
+        # optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
+        # self._opacity = optimizable_tensors["opacity"]
+
+        # torch.cuda.empty_cache()
+    
+    def reset_opacity_by_mask(self, mask, gamma):
+
+        opa = self.get_opacity
+        
+        print('reset: ', mask.sum().item())
+        # reset opacity
+        opa[mask] = opa[mask] * gamma
+        
+        # update
+        opacities_new = inverse_sigmoid(opa)
+        optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
+        self._opacity = optimizable_tensors["opacity"]
+
+        torch.cuda.empty_cache()
+
+    def rescale_by_mask(self, mask, gamma):
+
+        scale = self.get_scaling
+        
+        print('rescale: ', mask.sum().item())
+        # rescale
+        scale[mask] = scale[mask] * gamma
+        
+        # update
+        scales_new = self.scaling_inverse_activation(scale)
+        optimizable_tensors = self.replace_tensor_to_optimizer(scales_new, "scaling")
+        self._scaling = optimizable_tensors["scaling"]
+
+        torch.cuda.empty_cache()
+
+    
+    def reset_opacity_outside_fov(self, camera_pose, projmatrix, W, H, gamma):
+
+        world_to_cam = camera_pose
+        cam_to_world = torch.inverse(world_to_cam)
+        viewmatrix = cam_to_world
+        fullprojmatrix = projmatrix @ viewmatrix
+        
+        xyz = self.get_xyz
+        opa = self.get_opacity
+
+        xyz_hom = torch.cat((xyz, torch.ones((xyz.shape[0],1)).to("cuda")), axis=1) # Nx4
+        p_hom = xyz_hom @ fullprojmatrix.T # Nx4
+        p_hom = p_hom / p_hom[:,-1].view(-1,1)
+        p_view = xyz_hom @ viewmatrix.T # Nx4
+        mask_front = p_view[:,2] > 0 # select points in front of cam plane
+
+        # NDC to img
+        uv = p_hom[:,:2] # Nx2
+        uv[:,0] = ((uv[:,0] + 1.0) * W - 1.0) * 0.5
+        uv[:,1] = ((uv[:,1] + 1.0) * H - 1.0) * 0.5
+        uv = torch.round(uv)
+        mask_in_image = (uv[:, 0] > 0) & (uv[:, 1] > 0) & (uv[:, 0] < W) & (uv[:, 1] < H) # select points that can be projected to the image
+        mask_in_image *= mask_front
+        mask = ~mask_in_image
+        print('fov reset: ', mask.sum().item())
+        # reset opacity
+        opa[mask] = opa[mask] * gamma
+        
+        # update
+        opacities_new = inverse_sigmoid(opa)
+        optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
+        self._opacity = optimizable_tensors["opacity"]
+
+        torch.cuda.empty_cache()
+
+    def mask_outside_fov(self, camera_pose, projmatrix, W, H):
+
+        world_to_cam = camera_pose
+        cam_to_world = torch.inverse(world_to_cam)
+        viewmatrix = cam_to_world
+        fullprojmatrix = projmatrix @ viewmatrix
+        
+        xyz = self.get_xyz
+
+        xyz_hom = torch.cat((xyz, torch.ones((xyz.shape[0],1)).to("cuda")), axis=1) # Nx4
+        p_hom = xyz_hom @ fullprojmatrix.T # Nx4
+        p_hom = p_hom / p_hom[:,-1].view(-1,1)
+        p_view = xyz_hom @ viewmatrix.T # Nx4
+        mask_front = p_view[:,2] > 0 # select points in front of cam plane
+
+        # NDC to img
+        uv = p_hom[:,:2] # Nx2
+        uv[:,0] = ((uv[:,0] + 1.0) * W - 1.0) * 0.5
+        uv[:,1] = ((uv[:,1] + 1.0) * H - 1.0) * 0.5
+        uv = torch.round(uv)
+        mask_in_image = (uv[:, 0] > 0) & (uv[:, 1] > 0) & (uv[:, 0] < W) & (uv[:, 1] < H) # select points that can be projected to the image
+        mask_in_image *= mask_front
+        mask = ~mask_in_image
+        return mask
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)

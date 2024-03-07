@@ -9,7 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
-from ..scene.cameras import Camera
+from scene.cameras import Camera
 import numpy as np
 from .general_utils import PILtoTorch, ArrayToTorch
 from .graphics_utils import fov2focal
@@ -62,7 +62,10 @@ def loadCam(args, id, cam_info, resolution_scale):
     return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
                   image=gt_image, gt_alpha_mask=loaded_mask,
-                  image_name=cam_info.image_name, uid=id, data_device=args.data_device, depth=gt_depth, R_gt=cam_info.R_gt, T_gt=cam_info.T_gt)
+                  image_name=cam_info.image_name, uid=id, data_device=args.data_device, depth=gt_depth, R_gt=cam_info.R_gt, T_gt=cam_info.T_gt,
+                  mat=cam_info.mat,
+                  raw_pc=cam_info.raw_pc,
+                  kdtree=cam_info.kdtree)
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args):
     camera_list = []

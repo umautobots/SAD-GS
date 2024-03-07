@@ -12,15 +12,18 @@
 import torch
 from torch import nn
 import numpy as np
-from ..utils.graphics_utils import getWorld2View2, getProjectionMatrix
-from ..utils.general_utils import get_expon_lr_func
+from utils.graphics_utils import getWorld2View2, getProjectionMatrix
+from utils.general_utils import get_expon_lr_func
 import pytorch3d.transforms
 
 class Camera(nn.Module):
     def __init__(self, colmap_id, R, T, FoVx, FoVy, image, gt_alpha_mask,
                  image_name, uid,
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda",
-                 depth=None, R_gt=None, T_gt=None
+                 depth=None, R_gt=None, T_gt=None,
+                 mat=None,
+                 raw_pc=None,
+                 kdtree=None
                  ):
         super(Camera, self).__init__()
 
@@ -55,7 +58,14 @@ class Camera(nn.Module):
         self.trans = trans
         self.scale = scale
 
-        if R_gt.any() and T_gt.any():
+        if raw_pc is not None:
+            self.raw_pc = raw_pc
+        if kdtree is not None:
+            self.kdtree = kdtree
+        if mat is not None:
+            self.mat = mat
+
+        if R_gt is not None and T_gt is not None:
             _world_view_transform_gt = torch.tensor(getWorld2View2(R_gt, T_gt, trans, scale)).cuda()
             self.pose_tensor_gt = self.transform_to_tensor(_world_view_transform_gt)
 
@@ -107,6 +117,10 @@ class Camera(nn.Module):
     def get_camera_center(self):
         world_view_transform = self.tensor_to_transform(self.pose_tensor).transpose(0,1)
         return world_view_transform.inverse()[3, :3]
+
+    ###
+    def get_projection_matrix(self):
+        return getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy)
 
     ## Converts a 4x4 transformation matrix to the se(3) twist vector
     # Inspired by a similar NICE-SLAM function.

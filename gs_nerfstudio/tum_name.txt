@@ -1,0 +1,10 @@
+tum_1shot_id0_0218/ndt0.1/only_c
+tum_1shot_id0_0218/ndt0.1/0.1ds
+tum_1shot_id0_0218/ndt0.1/reset_opa
+tum_1shot_id0_0218/ndt0.1/reset_opa_fovmask
+tum_1shot_id0_0218/ndt0.1/dist
+tum_1shot_id0_0218/ndt0.1/M0.01_voxacc1_cls2_reset_opa2_maxscale0.2_fovmask
+tum_1shot_id0_0218/ndt0.1/0.1ds_reset_opa_fovmask
+tum_xyz_cls_free_full_reset_opa_scale0.1_1e1_c10_reset1000_it3300
+tum_1shot_id0_0218/ndt0.1/reset_opa2
+tum_1shot_id0_0218/ndt0.1/reset_opa2_fovmask

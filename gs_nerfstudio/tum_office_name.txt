@@ -1,0 +1,10 @@
+tum_office_1shot_id1114/ndt0.1/only_c
+tum_office_1shot_id1114/ndt0.1/0.1ds
+tum_office_1shot_id1114/ndt0.1/reset_opa
+tum_office_1shot_id1114/ndt0.1/reset_opa_fovmask
+tum_office_1shot_id1114/ndt0.1/dist
+tum_office_1shot_id1114/ndt0.1/M0.01_voxacc1_cls2_reset_opa2_maxscale0.2_fovmask
+tum_office_1shot_id1114/ndt0.1/0.1ds_reset_opa_fovmask
+tum_office_M0.08_cls_free_full_reset_opa0.09_scale0.1_1e2_c10_reset1000_it3300
+tum_office_1shot_id1114/ndt0.1/reset_opa2
+tum_office_1shot_id1114/ndt0.1/reset_opa2_fovmask

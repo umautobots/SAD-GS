@@ -12,17 +12,17 @@
 import os
 import random
 import json
-from ..utils.system_utils import searchForMaxIteration
+from utils.system_utils import searchForMaxIteration
 from .dataset_readers import sceneLoadTypeCallbacks
 from .gaussian_model import GaussianModel
-from ..arguments import ModelParams
-from ..utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
+from arguments import ModelParams
+from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
 
 class Scene:
 
     gaussians : GaussianModel
 
-    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0], pose_trans_noise=0, single_frame_id=None, voxel_size=None, init_w_gaussian=False):
+    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0], pose_trans_noise=0, single_frame_id=None, voxel_size=None, init_w_gaussian=False, load_ply=False):
         """b
         :param path: Path to colmap scene main folder.
         """
@@ -41,13 +41,25 @@ class Scene:
         self.test_cameras = {}
 
         if os.path.exists(os.path.join(args.source_path, "sparse")):
-            scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.depths, args.eval)
+            scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.depths, args.eval, load_ply=load_ply)
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
             print("Found transforms_train.json file, assuming Blender data set!")
-            scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.eval)
+            scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.eval, load_ply=load_ply)
         elif os.path.exists(os.path.join(args.source_path, "traj.txt")):
             print("Found traj.txt file, assuming Replica data set!")
-            scene_info = sceneLoadTypeCallbacks["Replica"](args.source_path, args.eval, pose_trans_noise=pose_trans_noise, single_frame_id=single_frame_id, voxel_size=voxel_size, init_w_gaussian=init_w_gaussian)
+            scene_info = sceneLoadTypeCallbacks["Replica"](args.source_path, args.eval, pose_trans_noise=pose_trans_noise, single_frame_id=single_frame_id, voxel_size=voxel_size, init_w_gaussian=init_w_gaussian, load_ply=load_ply)
+        elif os.path.exists(os.path.join(args.source_path, "groundtruth.txt")):
+            print("Found groundtruth.txt file, assuming TUM data set!")
+            scene_info = sceneLoadTypeCallbacks["TUM"](args.source_path, args.eval, pose_trans_noise=pose_trans_noise, single_frame_id=single_frame_id, voxel_size=voxel_size, init_w_gaussian=init_w_gaussian, load_ply=load_ply)
+        elif os.path.exists(os.path.join(args.source_path, "depot_groundtruth.txt")):
+            print("Found depot_groundtruth.txt file, assuming Depot data set!")
+            scene_info = sceneLoadTypeCallbacks["Depot"](args.source_path, args.eval, pose_trans_noise=pose_trans_noise, single_frame_id=single_frame_id, voxel_size=voxel_size, init_w_gaussian=init_w_gaussian, load_ply=load_ply)
+        elif os.path.exists(os.path.join(args.source_path, "cam_poses.txt")):
+            print("Found cam_poses.txt file, assuming WildRGBD data set!")
+            scene_info = sceneLoadTypeCallbacks["WildRGBD"](args.source_path, args.eval, pose_trans_noise=pose_trans_noise, single_frame_id=single_frame_id, voxel_size=voxel_size, init_w_gaussian=init_w_gaussian)
+        elif os.path.exists(os.path.join(args.source_path, "transforms.json")):
+            print("Found transforms.json file, assuming TUM data set!")
+            scene_info = sceneLoadTypeCallbacks["Apple"](args.source_path, args.eval, pose_trans_noise=pose_trans_noise, single_frame_id=single_frame_id, voxel_size=voxel_size, init_w_gaussian=init_w_gaussian)
         else:
             assert False, "Could not recognize scene type!"
 

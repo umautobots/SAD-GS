@@ -1,0 +1,7 @@
+1shot_id79/ndt0.1/only_c
+1shot_id79/ndt0.1/0.1ds
+1shot_id79/ndt0.1/reset_opa
+1shot_id79/ndt0.1/reset_opa_fovmask
+1shot_id79/ndt0.1/dist
+1shot_id79/ndt0.1/M0.01_voxacc1_cls2_reset_opa2_maxscale0.2_fovmask
+1shot_id79/ndt0.1/0.1ds_reset_opa_fovmask

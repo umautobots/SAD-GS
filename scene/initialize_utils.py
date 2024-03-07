@@ -4,7 +4,6 @@ import torch
 import open3d as o3d
 
 def precompute_gaussians(xyz, rgb, grid_size=0.2):
-
     xyz_offset = xyz.min(dim=0)[0]
     xyz_norm = xyz - xyz_offset
     grid_dim_idxs = torch.floor(xyz_norm / grid_size).long()
