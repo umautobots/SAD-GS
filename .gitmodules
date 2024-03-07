@@ -4,6 +4,7 @@
 [submodule "submodules/diff-gaussian-rasterization"]
 	path = submodules/diff-gaussian-rasterization
 	url = git@gitlab.eecs.umich.edu:umfordav/diff-gaussian-rasterization.git
+	branch = hit_count
 [submodule "SIBR_viewers"]
 	path = SIBR_viewers
 	url = https://gitlab.inria.fr/sibr/sibr_core.git
