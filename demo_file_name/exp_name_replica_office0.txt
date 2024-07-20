@@ -1,0 +1,8 @@
+replica_office0_id79/voxel_size_0.1/SAD_GS
+replica_office0_id79/voxel_size_0.1/dist_loss
+replica_office0_id79/voxel_size_0.1/only_c
+replica_office0_id79/voxel_size_0.1/only_ds
+replica_office0_id79/voxel_size_0.1/ds_reset_opa_fovmask
+replica_office0_id79/voxel_size_0.1/ds_fovmask
+replica_office0_id79/voxel_size_0.1/reset_opa_fovmask
+replica_office0_id79/voxel_size_0.1/reset_opa

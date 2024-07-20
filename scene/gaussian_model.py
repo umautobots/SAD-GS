@@ -158,8 +158,8 @@ class GaussianModel:
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
-    def add_from_pcd(self, pcd: BasicPointCloud, spatial_lr_scale: float, voxel_size):
-        assert spatial_lr_scale == self.spatial_lr_scale
+    def add_from_pcd(self, pcd: BasicPointCloud, voxel_size): # , spatial_lr_scale: float
+        # assert spatial_lr_scale == self.spatial_lr_scale
         
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
@@ -201,6 +201,10 @@ class GaussianModel:
         self._rotation = update_param(self._rotation, rots)
         self._opacity = update_param(self._opacity, opacities)
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        
+        # TODO: tmp Will reset accumulated gradient
+        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
     def create_from_gs(self, means, colors, covs, spatial_lr_scale : float):
         self.spatial_lr_scale = spatial_lr_scale
@@ -243,8 +247,8 @@ class GaussianModel:
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
     
-    def add_from_gs(self, means, colors, covs, spatial_lr_scale: float, voxel_size):
-        assert spatial_lr_scale == self.spatial_lr_scale
+    def add_from_gs(self, means, colors, covs, voxel_size):
+        # assert spatial_lr_scale == self.spatial_lr_scale
         
         fused_point_cloud = means.float().cuda()
         fused_color = RGB2SH(colors.float().cuda())
@@ -293,6 +297,10 @@ class GaussianModel:
         self._rotation = update_param(self._rotation, rots)
         self._opacity = update_param(self._opacity, opacities)
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        
+        # TODO: tmp Will reset accumulated gradient
+        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
     
     def add_noise(self, N):
         print('Add nosies !!!')
@@ -706,7 +714,7 @@ class GaussianModel:
         self._opacity = optimizable_tensors["opacity"]
         torch.cuda.empty_cache()
     
-    def reset_opacity_by_depth_image_fast(self, camera_pose, projmatrix, W, H, depth, thres, gamma, near_far):
+    def reset_opacity_by_depth_image_fast(self, camera_pose, projmatrix, W, H, cx, cy, depth, thres, gamma, near_far):
 
         world_to_cam = camera_pose
         cam_to_world = torch.inverse(world_to_cam)
@@ -734,6 +742,10 @@ class GaussianModel:
         uv[:,0] = ((uv[:,0] + 1.0) * W - 1.0) * 0.5
         uv[:,1] = ((uv[:,1] + 1.0) * H - 1.0) * 0.5
         uv = torch.round(uv)
+
+        uv[:,0]+= round(cx - (W/2.-0.5))
+        uv[:,1]+= round(cy - (H/2.-0.5))
+
         mask_in_image = (uv[:, 0] > 0) & (uv[:, 1] > 0) & (uv[:, 0] < W) & (uv[:, 1] < H) # select points that can be projected to the image
 
         dist_from_depth = torch.zeros_like((dist))
@@ -769,7 +781,7 @@ class GaussianModel:
 
         torch.cuda.empty_cache()
 
-    def loss_by_depth_image(self, camera_pose, projmatrix, W, H, depth, raw_pc, thres, near, far):
+    def loss_by_depth_image(self, camera_pose, projmatrix, W, H, cx, cy, depth, raw_pc, thres, near, far):
 
         world_to_cam = camera_pose
         cam_to_world = torch.inverse(world_to_cam)
@@ -796,13 +808,19 @@ class GaussianModel:
         uv[:,0] = ((uv[:,0] + 1.0) * W - 1.0) * 0.5
         uv[:,1] = ((uv[:,1] + 1.0) * H - 1.0) * 0.5
         uv = torch.round(uv)
-        mask_in_image = (uv[:, 0] >= 0) & (uv[:, 1] >= 0) & (uv[:, 0] < W) & (uv[:, 1] < H) # select points that can be projected to the image
 
-        dist_from_depth = torch.zeros_like((dist))
-        uv_in = uv[mask_in_image].long()
+        uv[:,0]+= round(cx - (W/2.-0.5))
+        uv[:,1]+= round(cy - (H/2.-0.5))
+
+        mask_in_image = (uv[:, 0] >= 0) & (uv[:, 1] >= 0) & (uv[:, 0] < W) & (uv[:, 1] < H) # select points that can be projected to the image
+        mask_fov = mask_in_image & mask_front
+
+        dist_fov = dist[mask_fov]
+        dist_from_depth = torch.zeros_like((dist_fov))
+        uv_in_fov = uv[mask_fov].long()
+        xyz_fov = xyz[mask_fov]
 
         ###
-        print('Operating PC')
         raw_pc = torch.tensor(raw_pc).cuda().float()
         xyz_hom = torch.cat((raw_pc, torch.ones((raw_pc.shape[0],1)).to("cuda")), axis=1) # Nx4
         p_hom = xyz_hom @ fullprojmatrix.T # Nx4
@@ -815,63 +833,40 @@ class GaussianModel:
         uv_pc[:,1] = ((uv_pc[:,1] + 1.0) * H - 1.0) * 0.5
         uv_pc = torch.round(uv_pc).long()
 
+        uv_pc[:,0]+= round(cx - (W/2.-0.5))
+        uv_pc[:,1]+= round(cy - (H/2.-0.5))
+
         pixels_to_points = torch.full((H, W, 3), float('nan')).cuda()
         pixels_to_points[uv_pc[:, 1], uv_pc[:, 0]] = raw_pc[:]
         pixels_to_dist = torch.norm(pixels_to_points, dim=2)
 
-        corr_xyz = torch.full((xyz.shape), float('nan')).cuda()
-        corr_xyz[mask_in_image][:] = pixels_to_points[uv_in[:,1], uv_in[:,0]]
-        print('corr_xyz.shape: ', corr_xyz.shape)
-        print(corr_xyz[:5])
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots(1, 2, figsize=(12, 6))
+        ax[0].imshow(pixels_to_dist.detach().cpu().numpy(), cmap='jet')
+        ax[1].imshow(depth[0].detach().cpu().numpy(), cmap='jet')
+        plt.show()
 
-        import open3d as o3d
-        pc = o3d.geometry.PointCloud()
-        pc.points = o3d.utility.Vector3dVector(xyz.cpu().detach().numpy())
-        pc.paint_uniform_color([1,0,0])
-
-        input_pc = o3d.geometry.PointCloud()
-        input_pc.points = o3d.utility.Vector3dVector(raw_pc.cpu().detach().numpy())
-        input_pc.paint_uniform_color([0,0,1])
-
-        corr_pc = o3d.geometry.PointCloud()
-        corr_pc.points = o3d.utility.Vector3dVector(corr_xyz.cpu().detach().numpy())
-        corr_pc.paint_uniform_color([0,1,0])
-        o3d.visualization.draw_geometries([corr_pc])
+        corr_xyz_fov = torch.full((xyz_fov.shape), float('nan')).cuda()
+        corr_xyz_fov[:] = pixels_to_points[uv_in_fov[:,1], uv_in_fov[:,0]]
 
         # Thres Mask
-        dist_from_depth[mask_in_image] = depth[0][uv_in[:,1], uv_in[:,0]].view(-1,1) # Nx1
+        dist_from_depth = depth[0][uv_in_fov[:,1], uv_in_fov[:,0]].view(-1,1) # Nx1
         if near and far:
-            mask_thres = (torch.abs(dist_from_depth-dist) > thres).view(-1)
+            fov_thres_mask = (torch.abs(dist_from_depth-dist_fov) > thres).view(-1)
         elif not near and far:
-            mask_thres = ((dist-dist_from_depth) > thres).view(-1)
+            fov_thres_mask = ((dist_fov-dist_from_depth) > thres).view(-1)
         elif near and not far:
-            mask_thres = ((dist_from_depth-dist) > thres).view(-1)
+            fov_thres_mask = ((dist_from_depth-dist_fov) > thres).view(-1)
         else:
             sys.exit('loss_by_depth_image should have either near or far setting to True')
 
-        # mask = (mask_front & mask_in_image & mask_thres).view(-1,1)
+        fov_nan_mask = torch.isnan(corr_xyz_fov).any(dim=1) # rm pixels wo/ depth measurement
+        fov_valid_mask = ~fov_nan_mask
 
-        nan_mask = torch.isnan(corr_xyz).any(dim=1)
-        valid_mask = ~nan_mask
+        valid_xyz = xyz_fov[fov_thres_mask & fov_valid_mask]
+        valid_corr_xyz = corr_xyz_fov[fov_thres_mask & fov_valid_mask]
 
-        mask = (mask_front & mask_in_image & mask_thres & valid_mask).view(-1,1)
-
-        valid_xyz = xyz[mask]
-        valid_corr_xyz = corr_xyz[mask]
-        print(valid_corr_xyz.shape)
-
-        import open3d as o3d
-
-        input_pc = o3d.geometry.PointCloud()
-        input_pc.points = o3d.utility.Vector3dVector(valid_xyz.cpu().detach().numpy())
-        input_pc.paint_uniform_color([1,0,0])
-
-        corr_pc = o3d.geometry.PointCloud()
-        corr_pc.points = o3d.utility.Vector3dVector(valid_corr_xyz.cpu().detach().numpy())
-        corr_pc.paint_uniform_color([0,1,0])
-        o3d.visualization.draw_geometries([input_pc, corr_pc])
-
-        return mask
+        return valid_xyz, valid_corr_xyz
     
     def mask_by_depth_image(self, camera_pose, projmatrix, W, H, depth, thres, near, far):
 
@@ -894,6 +889,9 @@ class GaussianModel:
         mask_front = p_view[:,2] > 0 # select points in front of cam plane
         # Use z-axis as depth
         dist = p_view[:,2].view(-1,1)
+        print(dist.mean())
+        print(dist.shape)
+        
 
         # NDC to img
         uv = p_hom[:,:2] # Nx2
@@ -913,9 +911,13 @@ class GaussianModel:
         # for (uv_,dist_) in zip(uv, dist):
         #     img[0][uv_[1], uv_[0]] = torch.max(dist_, img[0][uv_[1], uv_[0]])
         # import matplotlib.pyplot as plt
+        # plt.figure(figsize=(10, 5))
+        # plt.subplot(1, 2, 1)
         # plt.imshow(img[0].detach().cpu().numpy(), cmap='jet')
-        # plt.show()
+        # plt.title('reproject')
+        # plt.subplot(1, 2, 2)
         # plt.imshow(depth[0].detach().cpu().numpy(), cmap='jet')
+        # plt.title('depth')
         # plt.show()
         ###
 

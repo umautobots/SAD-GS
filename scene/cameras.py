@@ -17,7 +17,7 @@ from utils.general_utils import get_expon_lr_func
 import pytorch3d.transforms
 
 class Camera(nn.Module):
-    def __init__(self, colmap_id, R, T, FoVx, FoVy, image, gt_alpha_mask,
+    def __init__(self, colmap_id, R, T, FoVx, FoVy, Cx, Cy, image, gt_alpha_mask,
                  image_name, uid,
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda",
                  depth=None, R_gt=None, T_gt=None,
@@ -33,6 +33,8 @@ class Camera(nn.Module):
         self.T = T
         self.FoVx = FoVx
         self.FoVy = FoVy
+        self.Cx = Cx
+        self.Cy = Cy
         self.image_name = image_name
 
         try:

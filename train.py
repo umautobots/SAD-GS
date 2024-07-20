@@ -140,7 +140,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     voxel_size=args.voxel_size, init_w_gaussian=args.init_w_gaussian, load_ply=args.load_ply)
 
     ## Add noise
-    gaussians.add_noise(5000)
+    # gaussians.add_noise(5000)
 
     gaussians.training_setup(opt)
     if checkpoint:
@@ -161,14 +161,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     
     viewpoint_stack_all = scene.getTrainCameras().copy()
     
-    if args.cls_loss or args.dist:
+    if args.dist:
         raw_pc_map=[]
         for viewpoint_cam in viewpoint_stack_all:
             raw_pc_map.append(viewpoint_cam.raw_pc)
         raw_pc_map = np.concatenate(raw_pc_map,axis=0)
         o3d_pcd = o3d.geometry.PointCloud()
         o3d_pcd.points = o3d.utility.Vector3dVector(raw_pc_map)
-        o3d_pcd = o3d_pcd.voxel_down_sample(0.05)
+        # o3d_pcd = o3d_pcd.voxel_down_sample(0.05)
         raw_pc_map = np.asarray(o3d_pcd.points)
         print('raw_pc_map.shape: ', raw_pc_map.shape)
         kdtree = KDTree(raw_pc_map, leaf_size=1)
@@ -210,6 +210,34 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if (iteration - 1) == debug_from:
             pipe.debug = True
 
+        #####
+        active_add=False
+        if active_add and iteration>1 and iteration%100==2:
+            alpha_ = torch.clone(alpha)
+            
+            # viewpoint_cam.Cx, viewpoint_cam.Cy
+            
+            o3d_depth = o3d.geometry.Image(np.array(viewpoint_cam.depth.cpu()).astype(np.float32))
+            tmp = np.array(viewpoint_cam.original_image.permute(1,2,0).cpu()*255).astype(np.uint8)
+            
+            o3d_image = o3d.geometry.Image(np.array(viewpoint_cam.original_image.permute(1,2,0).cpu()*255).astype(np.uint8))
+            o3d_intrinsic = o3d.camera.PinholeCameraIntrinsic(1200, 680, 600, 600, 599.5, 339.5)
+            rgbd_img = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d_image, o3d_depth, depth_scale=1., depth_trunc=1000, convert_rgb_to_intensity=False)
+            o3d_pc = o3d.geometry.PointCloud.create_from_rgbd_image(image=rgbd_img, intrinsic=o3d_intrinsic, extrinsic=np.identity(4))
+            o3d_pc = o3d_pc.transform(viewpoint_cam.mat)
+            
+            # o3d.visualization.draw_geometries([o3d_pc])
+            
+            means = torch.tensor(np.array(o3d_pc.points))[::50]
+            colors = torch.tensor(np.array(o3d_pc.colors))[::50]
+            covs = torch.tensor(np.tile(np.eye(3), (len(means), 1, 1))*0.0002) # TODO: the scale is weird
+            gaussians.add_from_gs(means, colors, covs, voxel_size=0)
+            
+            # from scene.gaussian_model import BasicPointCloud
+            # pcd = BasicPointCloud(points=means, colors=colors, normals=np.zeros((means.shape[0], 3)))
+            # gaussians.add_from_pcd(pcd, voxel_size=0)
+        #####
+
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         # image, viewspace_point_tensor, visibility_filter, radii, depth, depth_var = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"], render_pkg["depth"], render_pkg["depth_var"]
         image, viewspace_point_tensor, visibility_filter, radii, depth, alpha = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"], render_pkg["depth"], render_pkg["alpha"]
@@ -218,10 +246,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
 
-        gt_image[:] = gt_image[:] * ~(gt_depth < 0) # set far range region to black 
+        # set far range region to black
+        # gt_image[:] = gt_image[:] * ~(gt_depth < 0) 
+        # print('neg depth: ', (gt_depth < 0).sum())
+
+        if args.TUM:
+            # set pixels without depth measurement to black
+            gt_image[:] = gt_image[:] * ~(gt_depth == 0) 
         
-        # gt_image[:] = gt_image[:] * ~(gt_depth == 0) # ignore pixels without depth measurement
-        # image[:] = image[:] * ~(gt_depth == 0) # ignore pixels without depth measurement
+        # # ignore pixels without depth measurement
+        # gt_image[:] = gt_image[:] * ~(gt_depth == 0)
+        # image[:] = image[:] * ~(gt_depth == 0)
 
         Ll1 = l1_loss(image, gt_image)
 
@@ -253,6 +288,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             alpha = torch.clone(alpha)
             gt_alpha = torch.ones_like(alpha)
             gt_alpha[0][gt_depth==0]=0
+            alpha[0][gt_depth!=0]=1 # only force to zero
             alpha_loss = l1_loss(gt_alpha, alpha)
             loss += alpha_loss * args.alpha_loss
 
@@ -265,12 +301,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # plt.tight_layout()
             # plt.show()
 
+        margin_scale = 1. #0.5 #1.
+        
         if args.cls_loss:
             cam_pos = torch.tensor(viewpoint_cam.mat[:3,3])
             raw_pc = torch.tensor(viewpoint_cam.raw_pc).to(gaussians.get_xyz.device)
             occ_pc = raw_pc
-            free_pc = create_free_pc(cam_pos, raw_pc, near_bound=0.05, far_bound=0.051, margin=0.03, sample_res=0.05, perturb=0.02, device=gaussians.get_xyz.device)
-            # free_pc = create_free_pc(cam_pos, raw_pc, near_bound=0.05, far_bound=0.0, margin=0.03, sample_res=1., perturb=0.02, device=gaussians.get_xyz.device)
+            free_pc = create_free_pc(cam_pos, raw_pc, near_bound=0.05*margin_scale, far_bound=0.05*margin_scale+0.0001, margin=0.03*margin_scale, sample_res=0.05*margin_scale, perturb=0.05*margin_scale-(0.03*margin_scale), device=gaussians.get_xyz.device)
+            # free_pc = create_free_pc(cam_pos, raw_pc, near_bound=0.1, far_bound=0.1, margin=0.06, sample_res=0.1, perturb=0.04, device=gaussians.get_xyz.device)
             # near_free_pc = create_free_pc(cam_pos, raw_pc, near_bound=5., far_bound=0.0, margin=0.03, sample_res=0.2, perturb=0.2, device=gaussians.get_xyz.device)
 
             # free_pc = create_free_pc(cam_pos, raw_pc, near_bound=0.1, far_bound=0.101, margin=0.03, sample_res=0.025, perturb=0.025, device=gaussians.get_xyz.device)
@@ -289,9 +327,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # input_pcd = o3d.geometry.PointCloud()
             # input_pcd.points = o3d.utility.Vector3dVector(viewpoint_cam.raw_pc)
             # input_pcd.paint_uniform_color([0,1,0])
-            # o3d.visualization.draw_geometries([occ_pcd, input_pcd, free_pcd])
+            # gs = o3d.geometry.PointCloud()
+            # gs.points = o3d.utility.Vector3dVector(gaussians.get_xyz.detach().cpu().numpy())
+            # gs.paint_uniform_color([1,1,0])
+            # o3d.visualization.draw_geometries([occ_pcd, free_pcd])
             
-            M = int(raw_pc.shape[0]/100.) # TODO
+            # M = int(raw_pc.shape[0]/100.) # TODO
+            M = int(raw_pc.shape[0]/100.)
+            
             occ_pc = occ_pc[torch.randint(0, occ_pc.size(0), (M,))]
             free_pc = free_pc[torch.randint(0, free_pc.size(0), (M,))]
 
@@ -299,7 +342,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # free_pc = torch.vstack((free_pc, near_free_pc))
             gs_idx, occ_idx, free_idx = compute_grids(gaussians.get_xyz, occ_pc, free_pc, grid_size=args.cls_grid_size, perturb=0.) # grid_size: 0.3 for wildrgbd
             
-            max_idx = torch.max(torch.max(gs_idx.max(), occ_idx.max()), free_idx.max())
+            max_idx = torch.max(torch.max(gs_idx.max(), occ_idx.max()), free_idx.max())+1
             occ_pts_prob, free_pts_prob = torch.zeros(len(occ_pc)).cuda(), torch.zeros(len(free_pc)).cuda()
             for idx in range(max_idx):
                 gs_mask = gs_idx==idx
@@ -330,7 +373,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     # occ = o3d.geometry.PointCloud()
                     # occ.points = o3d.utility.Vector3dVector(occ_pc_.detach().cpu().numpy())
                     # occ.paint_uniform_color([0,0,1])
-                    # o3d.visualization.draw_geometries([gs, free, occ])
+                    # o3d.visualization.draw_geometries([gs, occ])
 
             # mvn = torch.distributions.MultivariateNormal(gaussians.get_xyz, from_lowerdiag(gaussians.get_covariance()) + torch.eye(3).view(1,3,3).cuda()*1e-5)
             # pts_prob_ = query_gaussians(torch.cat((occ_pc, free_pc),dim=0), mvn, gaussians.get_opacity)
@@ -342,6 +385,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # occ_pts_prob_error = torch.relu(1 - occ_pts_prob)
 
             free_pts_prob_error = torch.abs(0 - free_pts_prob)
+            
+            # print('occ_pts_prob: ', occ_pts_prob.mean())
+            # print('free_pts_prob: ', free_pts_prob.mean())
             
             # L1 LOSS
             cls_loss = occ_pts_prob_error.mean()*data_balancing_weight + free_pts_prob_error.mean()
@@ -393,12 +439,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # dist_loss = (torch.min(distances, dim=1).values**2).mean() # somehow using the L2 loss is important here
             # loss += dist_loss * lambda_distloss
             
-            # lambda_distloss = 1e1 # for replica
-            lambda_distloss = 1e1 # for tum
+            lambda_distloss = 1e1
             distances, indices = kdtree.query(gaussians.get_xyz.float().detach().cpu().numpy())
             indices = indices[:,0]
             corr_pc = torch.tensor(raw_pc_map[indices]).cuda()
-            thres=0.05
+            thres= 0.0
             dist_loss = ((torch.relu(torch.norm(gaussians.get_xyz - corr_pc, dim=1) - thres))**2).mean() # somehow using the L2 loss is important here
             loss += dist_loss * lambda_distloss
 
@@ -406,12 +451,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if (args.reset_opa_far or args.reset_opa_near) and iteration>1 and iteration%100==0:
             camera_pose=torch.tensor(viewpoint_cam.mat).float().cuda()
             projmatrix=viewpoint_cam.get_projection_matrix().float().cuda()
-            thres = 0.05 #0.1
+            thres = 0.05 *  margin_scale #0.1
             gamma = 0.001
             if not args.reset_opa_far and args.reset_opa_near:
-                gaussians.reset_opacity_by_depth_image_fast(camera_pose, projmatrix, gt_depth.shape[1], gt_depth.shape[0], gt_depth.unsqueeze(0), thres, gamma, near_far=False)
+                gaussians.reset_opacity_by_depth_image_fast(camera_pose, projmatrix, gt_depth.shape[1], gt_depth.shape[0], viewpoint_cam.Cx, viewpoint_cam.Cy, gt_depth.unsqueeze(0), thres, gamma, near_far=False)
             elif args.reset_opa_far and args.reset_opa_near:
-                gaussians.reset_opacity_by_depth_image_fast(camera_pose, projmatrix, gt_depth.shape[1], gt_depth.shape[0], gt_depth.unsqueeze(0), thres, gamma, near_far=True)
+                gaussians.reset_opacity_by_depth_image_fast(camera_pose, projmatrix, gt_depth.shape[1], gt_depth.shape[0], viewpoint_cam.Cx, viewpoint_cam.Cy, gt_depth.unsqueeze(0), thres, gamma, near_far=True)
             else:
                 print('Error')
                 sys.exit()
@@ -422,8 +467,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             gamma = 0.001
             gaussians.reset_opacity_outside_fov(camera_pose, projmatrix, image.shape[2], image.shape[1], gamma)
         
-        if args.full_reset_opa and iteration>1 and iteration%100==0:
-            thres = 0.05 # TODO
+        if args.full_reset_opa and iteration%100==0:
+            thres = 0.05 * margin_scale #0.05 # TODO
             gamma = 0.001
             preserve_mask=None
             for view_cam_ in viewpoint_stack_all:
@@ -437,7 +482,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 # print(torch.count_nonzero(reset_fov_mask_).item(), reset_fov_mask_.squeeze())
                 # import sys
                 # sys.exit()
-
+                
                 reset_mask_ = reset_depth_mask_ + reset_fov_mask_
                 preserve_mask_ = ~reset_mask_
                 if preserve_mask==None:
@@ -445,18 +490,34 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 else:
                     preserve_mask += preserve_mask_
             gaussians.reset_opacity_by_mask(~preserve_mask, gamma)
-        
+                    
         if args.depth_correct and iteration%1==0:
-            thres = 0.05 # TODO
-            gamma = 0.001
-            preserve_mask=None
-            for view_cam_ in viewpoint_stack_all:
+            thres = 0.0 #0.05 # TODO
+            lambda_depth_correct = 1e4 #1e1
+            for view_cam_ in viewpoint_stack_all: # TODO
                 camera_pose=torch.tensor(view_cam_.mat).float().cuda()
                 projmatrix=view_cam_.get_projection_matrix().float().cuda()
                 gt_depth_ = view_cam_.depth
                 raw_pc_ = view_cam_.raw_pc
-                depth_correct_loss = gaussians.loss_by_depth_image(camera_pose, projmatrix, gt_depth_.shape[1], gt_depth_.shape[0], gt_depth_.unsqueeze(0), raw_pc_, thres, near=True, far=True) # True
+                valid_xyz, valid_corr_xyz = gaussians.loss_by_depth_image(camera_pose, projmatrix, gt_depth_.shape[1], gt_depth_.shape[0], view_cam_.Cx, view_cam_.Cy, gt_depth_.unsqueeze(0), raw_pc_, thres, near=True, far=True) # True
 
+                # if iteration%300==0:
+                #     input_pc = o3d.geometry.PointCloud()
+                #     input_pc.points = o3d.utility.Vector3dVector(valid_xyz.cpu().detach().numpy())
+                #     input_pc.paint_uniform_color([1,0,0])
+                #     corr_pc = o3d.geometry.PointCloud()
+                #     corr_pc.points = o3d.utility.Vector3dVector(valid_corr_xyz.cpu().detach().numpy())
+                #     corr_pc.paint_uniform_color([0,1,0])
+                #     line_set = o3d.geometry.LineSet()
+                #     line_set.points = o3d.utility.Vector3dVector(np.vstack([valid_xyz.cpu().detach().numpy(), valid_corr_xyz.cpu().detach().numpy()]))
+                #     correspondences = np.arange(valid_xyz.shape[0]).reshape(-1, 1)
+                #     correspondences = np.hstack([correspondences, correspondences+valid_xyz.shape[0]])
+                #     line_set.lines = o3d.utility.Vector2iVector(correspondences)
+                #     o3d.visualization.draw_geometries([input_pc, corr_pc, line_set])
+                
+                depth_correct_loss = l2_loss(valid_xyz, valid_corr_xyz)
+
+                loss += depth_correct_loss * lambda_depth_correct
 
         if args.scale_loss is not None:
             scale_thres = args.scale_loss # TODO
@@ -533,6 +594,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                         print('dist loss: ', "{0:.4f}".format(dist_loss.item()), end =" ")
                     if args.scale_loss is not None:
                         print('scale loss: ', "{0:.8f}".format(scale_loss.item()), end =" ")
+                    if args.depth_correct:
+                        print('depth correct loss: ', "{0:.8f}".format(depth_correct_loss.item()), end =" ")
                     print()
             if iteration == opt.iterations:
                 progress_bar.close()
@@ -561,7 +624,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                 print('reset_opacity !!!')
                 gaussians.reset_opacity()
-
+            
             # Optimizer step
             if iteration < opt.iterations:
                 if not args.localization:
@@ -572,7 +635,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 viewpoint_cam.optimizer.step()
                 viewpoint_cam.optimizer.zero_grad(set_to_none = True)
                 viewpoint_cam.update_learning_rate(iteration)
-            
+
             toc = time.time()
             total_computing_time += toc-tic
             if (iteration in checkpoint_iterations):
@@ -751,6 +814,8 @@ if __name__ == "__main__":
     parser.add_argument("--localization", action="store_true", default=False)
     parser.add_argument('--single_frame_id', type=list_of_ints, default=[])
     parser.add_argument('--wandb', action="store_true", default=False)
+    parser.add_argument('--TUM', action="store_true", default=False)
+    
 
 
     args = parser.parse_args(sys.argv[1:])

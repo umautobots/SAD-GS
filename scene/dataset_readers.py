@@ -39,6 +39,8 @@ class CameraInfo(NamedTuple):
     T: np.array
     FovY: np.array
     FovX: np.array
+    Cy: float
+    Cx: float
     image: np.array
     image_path: str
     image_name: str
@@ -55,6 +57,7 @@ class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
     train_cameras: list
     test_cameras: list
+    pseudo_cameras: list
     nerf_normalization: dict
     ply_path: str
     gaussian_init: dict
@@ -326,6 +329,9 @@ def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_fra
     width = 1200
     fx = 600
     fy = 600
+    cx = 599.5
+    cy = 339.5
+
     FovY = focal2fov(fy, height)
     FovX = focal2fov(fx, width)
     
@@ -367,7 +373,7 @@ def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_fra
         depth_scaled = Image.fromarray(np.array(depth) / 6553.5 * 255.0)
         
         if len(single_frame_id)>0 and (idx not in single_frame_id):
-            cam_info = CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+            cam_info = CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, Cy=cy, Cx=cx, image=image,
                                 image_path=image_path, image_name=image_name, width=width, height=height, depth=depth_scaled, R_gt=R_gt, T_gt=T_gt,
                                 mat=mat, raw_pc=None, kdtree=None)
             test_cam_infos.append(cam_info)
@@ -380,7 +386,7 @@ def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_fra
             o3d_pc = o3d_pc.transform(mat)
             raw_pc = np.asarray(o3d_pc.points)
             kdtree = KDTree(raw_pc)
-            cam_info = CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+            cam_info = CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, Cy=cy, Cx=cx, image=image,
                                 image_path=image_path, image_name=image_name, width=width, height=height, depth=depth_scaled, R_gt=R_gt, T_gt=T_gt,
                                 mat=mat, # Poses are w.r.t. the original frame
                                 raw_pc=raw_pc,
@@ -465,6 +471,7 @@ def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_fra
     scene_info = SceneInfo(point_cloud=pcd,
                            train_cameras=train_cam_infos,
                            test_cameras=test_cam_infos,
+                           pseudo_cameras=None,
                            nerf_normalization=nerf_normalization,
                            ply_path=ply_path,
                            gaussian_init=gaussian_init)
@@ -495,7 +502,7 @@ def build_tum_poses_from_df(df: pd.DataFrame, zero_origin=False):
 
     return poses.float(), ts
 
-def readTUMInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_id=None, voxel_size=None, init_w_gaussian=False, load_ply=False):
+def readTUMInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_id=None, voxel_size=None, init_w_gaussian=False, load_ply=False, use_pseudo_cam=False):
     folder_name = os.path.basename(path)
         
     traj_file = os.path.join(path, 'groundtruth.txt')
@@ -513,17 +520,26 @@ def readTUMInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_i
     
     TUM_FPS=30
     max_dt = 1.0 / TUM_FPS *  1.1
+
     associations = []
+    ts_interval = 0.5 # (s)
+    last_ts = None
     for img_idx, img_ts in enumerate(ts_image):
         depth_idx = np.argmin(np.abs(ts_depth - img_ts))
         pose_idx = np.argmin(np.abs(ts_pose - img_ts))
 
         if (np.abs(ts_depth[depth_idx] - img_ts) < max_dt) and \
                 (np.abs(ts_pose[pose_idx] - img_ts) < max_dt):
+            if last_ts !=None and (img_ts-last_ts < ts_interval):
+                continue
+            else:
+                last_ts = img_ts
             associations.append((img_idx, depth_idx, pose_idx))
     
     cam_infos = []
     test_cam_infos = []
+    pseudo_cam_infos = []
+
     mat_list = []
     pc_init = np.zeros((0,3))
     color_init = np.zeros((0,3))
@@ -534,7 +550,7 @@ def readTUMInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_i
         print("Detect freiburg1. Use freiburg1 intrinsic.")
         fx, fy, cx, cy = 517.3, 516.5, 318.6, 255.3
     elif 'freiburg2' in folder_name:
-        print("Detect freiburg2. Use freiburg12 intrinsic.")
+        print("Detect freiburg2. Use freiburg2 intrinsic.")
         fx, fy, cx, cy = 520.9, 521.0, 325.1, 249.7
     elif 'freiburg3' in folder_name:
         print("Detect freiburg3. Use freiburg3 intrinsic.")
@@ -543,15 +559,15 @@ def readTUMInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_i
     
     FovY = focal2fov(fy, height) # check where to incoorporate cx, cy
     FovX = focal2fov(fx, width)
-        
+
     for img_idx, depth_idx, pose_idx in associations:
 
         # if img_idx>300 or img_idx%10!=0:
         #     continue
         
         # TEMP
-        if len(single_frame_id)>0 and (img_idx not in single_frame_id):
-            continue
+        # if len(single_frame_id)>0 and (img_idx not in single_frame_id):
+        #     continue
 
         mat = np.array(poses[pose_idx])
         mat_list.append(mat)
@@ -578,16 +594,24 @@ def readTUMInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_i
         temp = Image.open(depth_path)
         depth = temp.copy()
         temp.close()
+        
+        ### TODO: long range filter
+        max_depth = 1.5
+        depth_far_mask = (np.array(depth)/depth_scale>max_depth)
+        depth = np.array(depth)
+        depth[depth_far_mask] = 0
+        depth = Image.fromarray(depth)
+        ###
+        
         depth_scaled = Image.fromarray(np.array(depth) / depth_scale * 255.0)
 
         image_name = os.path.basename(image_path).split(".png")[0]
 
         if len(single_frame_id)>0 and (img_idx not in single_frame_id):
-            continue # TODO: skip adding test_cam since there are too many frames in TUM
-            # cam_info = CameraInfo(uid=img_idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-            #                     image_path=image_path, image_name=image_name, width=width, height=height, depth=depth_scaled, R_gt=R_gt, T_gt=T_gt,
-            #                     mat=None, raw_pc=None, kdtree=None)
-            # test_cam_infos.append(cam_info)
+            cam_info = CameraInfo(uid=img_idx, R=R, T=T, FovY=FovY, FovX=FovX, Cy=cy, Cx=cx, image=image,
+                                image_path=image_path, image_name=image_name, width=width, height=height, depth=depth_scaled, R_gt=R_gt, T_gt=T_gt,
+                                mat=mat, raw_pc=None, kdtree=None)
+            test_cam_infos.append(cam_info)
         else:
             o3d_depth = o3d.geometry.Image(np.array(depth).astype(np.float32))
             o3d_image = o3d.geometry.Image(np.array(image).astype(np.uint8))
@@ -601,13 +625,54 @@ def readTUMInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_i
 
             raw_pc = np.asarray(o3d_pc.points)
             kdtree = KDTree(raw_pc)
-            cam_info = CameraInfo(uid=img_idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+            cam_info = CameraInfo(uid=img_idx, R=R, T=T, FovY=FovY, FovX=FovX, Cy=cy, Cx=cx, image=image,
                                 image_path=image_path, image_name=image_name, width=width, height=height, depth=depth_scaled, R_gt=R_gt, T_gt=T_gt,
                                 mat=mat, # Poses are w.r.t. the original frame
                                 raw_pc=raw_pc,
                                 kdtree=kdtree
                                 )
             cam_infos.append(cam_info)
+    
+    viz_list=[]
+
+    ############################## Generate Pseudo Cam ##############################
+    if use_pseudo_cam:
+        relative_center = np.array([0, 0, 1])  # Center point on the Z-axis
+        initial_pose = mat_list[0] #np.eye(4)  # Initial pose at the origin
+        num_poses_per_side = 10  # Number of poses to generate on each side of the initial pose
+        angle_change = 3  # Angle increment between consecutive poses in degrees
+        radius = 1  # Radius of the circle for the camera positions
+        from .gen_pseudo_cam_poses import generate_symmetric_camera_poses
+        poses, center = generate_symmetric_camera_poses(initial_pose, relative_center, num_poses_per_side, angle_change, radius)
+
+        center_sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.05)
+        center_sphere.translate(center)
+        center_sphere.paint_uniform_color([1, 0.706, 0])  # Gold color for visibility
+        viz_list.append(center_sphere)
+        
+        for i, pose in enumerate(poses):
+            size = 0.5 if i == 0 else 0.1
+            mesh = o3d.geometry.TriangleMesh.create_coordinate_frame(size=size, origin=[0, 0, 0])
+            mesh.transform(pose)
+            viz_list.append(mesh)
+
+            R = pose[:3,:3]
+            T = pose[:3,3]
+            T = -R.T @ T
+
+            # use the first img
+            image_path = f"{path}/"+image_data[0][1]
+            depth_path = f"{path}/"+depth_data[0][1]
+            image = Image.open(image_path)
+            depth = Image.open(depth_path)
+
+            cam_info = CameraInfo(uid=i, R=R, T=T, FovY=FovY, FovX=FovX, Cy=cy, Cx=cx, image=image,
+                                image_path=None, image_name=None, width=width, height=height, depth=depth, R_gt=R, T_gt=T,
+                                mat=poses[i], raw_pc=None, kdtree=None)
+            pseudo_cam_infos.append(cam_info)
+    else:
+        pseudo_cam_infos = None
+    ##############################
     
     train_cam_infos = cam_infos
 
@@ -653,6 +718,9 @@ def readTUMInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_i
         pcd = None
     
     gaussian_init = None
+    pc_init = np.asarray(pcd.points)
+    color_init = np.asarray(pcd.colors)
+    
     if init_w_gaussian:
         mean_xyz, mean_rgb, cov = precompute_gaussians(torch.tensor(pcd.points).to('cuda'), torch.tensor(pcd.colors).to('cuda'), voxel_size)
         gaussian_init={"mean_xyz": mean_xyz, "mean_rgb": mean_rgb, "cov": cov}
@@ -667,38 +735,37 @@ def readTUMInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_i
             color_init = np.asarray(o3d_pcd.colors)
             pcd = BasicPointCloud(points=pc_init, colors=color_init, normals=np.zeros((pc_init.shape[0], 3)))
 
-    viz_list=[]
-
-    mat = mat_list[0]
-    axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-    axis_mesh.scale(0.5, center=axis_mesh.get_center())
-    mesh = axis_mesh.transform(mat)
-    viz_list.append(mesh)
+    # mat = mat_list[0]
+    # axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
+    # axis_mesh.scale(0.5, center=axis_mesh.get_center())
+    # mesh = axis_mesh.transform(mat)
+    # viz_list.append(mesh)
     
-    for mat in mat_list:
-        axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-        axis_mesh.scale(0.1, center=axis_mesh.get_center())
-        mesh = axis_mesh.transform(mat)
-        viz_list.append(mesh)
+    # for mat in mat_list:
+    #     axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
+    #     axis_mesh.scale(0.1, center=axis_mesh.get_center())
+    #     mesh = axis_mesh.transform(mat)
+    #     viz_list.append(mesh)
 
     o3d_pcd = o3d.geometry.PointCloud()
     o3d_pcd.points = o3d.utility.Vector3dVector(pc_init)  
-    o3d_pcd.colors = o3d.utility.Vector3dVector(color_init)    
+    o3d_pcd.colors = o3d.utility.Vector3dVector(color_init)
     viz_list.append(o3d_pcd)
 
-    axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-    viz_list.append(axis_mesh)
+    # axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
+    # viz_list.append(axis_mesh)
 
-    axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-    mesh = axis_mesh.translate((1,0,0))
-    axis_mesh.scale(0.5, center=axis_mesh.get_center())
-    viz_list.append(axis_mesh)
+    # axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
+    # mesh = axis_mesh.translate((1,0,0))
+    # axis_mesh.scale(0.5, center=axis_mesh.get_center())
+    # viz_list.append(axis_mesh)
 
-    o3d.visualization.draw_geometries(viz_list)
+    # o3d.visualization.draw_geometries(viz_list)
 
     scene_info = SceneInfo(point_cloud=pcd,
                            train_cameras=train_cam_infos,
                            test_cameras=test_cam_infos,
+                           pseudo_cameras=pseudo_cam_infos,
                            nerf_normalization=nerf_normalization,
                            ply_path=ply_path,
                            gaussian_init=gaussian_init)
@@ -1106,34 +1173,94 @@ def readWildRGBDInfo(path, eval, extension=".png", pose_trans_noise=0, single_fr
 def readIPhoneInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_id=None, voxel_size=None, init_w_gaussian=False):
     print('readIPhoneInfo')
     print(path)
-    
-    image = Image.open(path+'/images/53.png')
-    depth = Image.open(path+'/images/53.depth.png') # / depth_scale !!!
-    print(np.max(depth), np.min(depth))
-    
-    img = Image.open('/home/pckung/Downloads/room/splatam_demo/depth/0.png')
-    img = np.array(img)*10./65535.0
-
-    # import matplotlib.pyplot as plt
-    # # Plotting the images side by side
-    # plt.figure(figsize=(10, 5))  # Adjust the figure size as needed
-
-    # # Plotting the first image
-    # plt.subplot(1, 2, 1)  # 1 row, 2 columns, 1st subplot
-    # plt.imshow(image)
-    # plt.title('Image 1')
-    # plt.axis('off')
-
-    # # Plotting the second image
-    # plt.subplot(1, 2, 2)  # 1 row, 2 columns, 2nd subplot
-    # plt.imshow(depth)
-    # plt.title('Image 2')
-    # plt.axis('off')
-
-    # plt.show()
+    single_frame_id = single_frame_id[0]
         
-    sys.exit()
+    height = 640
+    width = 480
+    fx = 427.82
+    fy = 427.82
+    cx = 240
+    cy = 320
     
+    R = np.identity(3)
+    R_gt = R
+    T = np.array([0,0,0])
+    T_gt = T
+    mat= np.identity(4)
+
+    FovY = focal2fov(fy, height)
+    FovX = focal2fov(fx, width)
+    
+    image_path = os.path.join(path, 'rgb', f'{single_frame_id}.png')
+    depth_path = os.path.join(path, 'depth', f'{single_frame_id}.npy')
+    
+    image = Image.open(image_path)
+    depth = np.load(depth_path)
+    depth[np.isnan(depth)]=0
+    
+    max_depth = 0.55 # only < 1m !!!!!!!!!!!!!!!!!
+    depth[depth>max_depth]=0
+    
+    depth_scaled = Image.fromarray(np.array(depth) * 255.)
+    
+    o3d_depth = o3d.geometry.Image(np.array(depth).astype(np.float32))
+    o3d_image = o3d.geometry.Image(np.array(image).astype(np.uint8))
+    o3d_intrinsic = o3d.camera.PinholeCameraIntrinsic(height, width, fx, fy, cx, cy) # fx, fy, cx, cy
+    rgbd_img = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d_image, o3d_depth, depth_scale=1, depth_trunc=1000, convert_rgb_to_intensity=False)
+    o3d_pc = o3d.geometry.PointCloud.create_from_rgbd_image(image=rgbd_img, intrinsic=o3d_intrinsic, extrinsic=np.identity(4))
+    o3d_pc = o3d_pc.transform(mat)
+    # o3d.visualization.draw_geometries([o3d_pc])
+    
+    raw_pc = np.asarray(o3d_pc.points)
+    kdtree = KDTree(raw_pc)
+    
+    cam_info = CameraInfo(uid=single_frame_id, R=R, T=T, FovY=FovY, FovX=FovX, Cy=cy, Cx=cx, image=image,
+                        image_path=image_path, image_name=image_path, width=width, height=height, depth=depth_scaled, R_gt=R_gt, T_gt=T_gt,
+                        mat=mat, # Poses are w.r.t. the original frame
+                        raw_pc=raw_pc,
+                        kdtree=kdtree
+                        )
+    cam_infos = []
+    test_cam_infos=[]
+    
+    cam_infos.append(cam_info)
+    train_cam_infos = cam_infos
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+    
+    ### for init pc
+    pc_init = np.asarray(o3d_pc.points)
+    color_init = np.asarray(o3d_pc.colors)
+    
+    ply_path = os.path.join(path, "points3d.ply")
+    num_pts = pc_init.shape[0]
+    xyz = pc_init
+    pcd = BasicPointCloud(points=xyz, colors=color_init, normals=np.zeros((num_pts, 3)))
+    storePly(ply_path, pc_init, color_init*255)
+    print('save pcd')
+    
+    gaussian_init = None
+    if init_w_gaussian:
+        mean_xyz, mean_rgb, cov = precompute_gaussians(torch.tensor(pcd.points).to('cuda'), torch.tensor(pcd.colors).to('cuda'), voxel_size)
+        gaussian_init={"mean_xyz": mean_xyz, "mean_rgb": mean_rgb, "cov": cov}
+    else:
+        if voxel_size is not None:
+            # downsample
+            o3d_pcd = o3d.geometry.PointCloud()
+            o3d_pcd.points = o3d.utility.Vector3dVector(pcd.points)
+            o3d_pcd.colors = o3d.utility.Vector3dVector(pcd.colors)
+            o3d_pcd = o3d_pcd.voxel_down_sample(voxel_size)
+            pc_init = np.asarray(o3d_pcd.points)
+            color_init = np.asarray(o3d_pcd.colors)
+            pcd = BasicPointCloud(points=pc_init, colors=color_init, normals=np.zeros((pc_init.shape[0], 3)))
+
+    scene_info = SceneInfo(point_cloud=pcd,
+                           train_cameras=train_cam_infos,
+                           test_cameras=test_cam_infos,
+                           nerf_normalization=nerf_normalization,
+                           ply_path=ply_path,
+                           gaussian_init=gaussian_init)
+    return scene_info
+            
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
     "Blender" : readNerfSyntheticInfo,

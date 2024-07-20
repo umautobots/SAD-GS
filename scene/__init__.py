@@ -22,7 +22,7 @@ class Scene:
 
     gaussians : GaussianModel
 
-    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0], pose_trans_noise=0, single_frame_id=None, voxel_size=None, init_w_gaussian=False, load_ply=False):
+    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0], pose_trans_noise=0, single_frame_id=None, voxel_size=None, init_w_gaussian=False, load_ply=False, use_pseudo_cam=False):
         """b
         :param path: Path to colmap scene main folder.
         """
@@ -39,6 +39,7 @@ class Scene:
 
         self.train_cameras = {}
         self.test_cameras = {}
+        self.pseudo_cameras = {}
 
         if os.path.exists(os.path.join(args.source_path, "sparse")):
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.depths, args.eval, load_ply=load_ply)
@@ -50,15 +51,15 @@ class Scene:
             scene_info = sceneLoadTypeCallbacks["Replica"](args.source_path, args.eval, pose_trans_noise=pose_trans_noise, single_frame_id=single_frame_id, voxel_size=voxel_size, init_w_gaussian=init_w_gaussian, load_ply=load_ply)
         elif os.path.exists(os.path.join(args.source_path, "groundtruth.txt")):
             print("Found groundtruth.txt file, assuming TUM data set!")
-            scene_info = sceneLoadTypeCallbacks["TUM"](args.source_path, args.eval, pose_trans_noise=pose_trans_noise, single_frame_id=single_frame_id, voxel_size=voxel_size, init_w_gaussian=init_w_gaussian, load_ply=load_ply)
+            scene_info = sceneLoadTypeCallbacks["TUM"](args.source_path, args.eval, pose_trans_noise=pose_trans_noise, single_frame_id=single_frame_id, voxel_size=voxel_size, init_w_gaussian=init_w_gaussian, load_ply=load_ply, use_pseudo_cam=use_pseudo_cam)
         elif os.path.exists(os.path.join(args.source_path, "depot_groundtruth.txt")):
             print("Found depot_groundtruth.txt file, assuming Depot data set!")
             scene_info = sceneLoadTypeCallbacks["Depot"](args.source_path, args.eval, pose_trans_noise=pose_trans_noise, single_frame_id=single_frame_id, voxel_size=voxel_size, init_w_gaussian=init_w_gaussian, load_ply=load_ply)
         elif os.path.exists(os.path.join(args.source_path, "cam_poses.txt")):
             print("Found cam_poses.txt file, assuming WildRGBD data set!")
             scene_info = sceneLoadTypeCallbacks["WildRGBD"](args.source_path, args.eval, pose_trans_noise=pose_trans_noise, single_frame_id=single_frame_id, voxel_size=voxel_size, init_w_gaussian=init_w_gaussian)
-        elif os.path.exists(os.path.join(args.source_path, "transforms.json")):
-            print("Found transforms.json file, assuming TUM data set!")
+        elif os.path.exists(os.path.join(args.source_path, "record3d")):
+            print("Found record3d file, assuming record3d data set!")
             scene_info = sceneLoadTypeCallbacks["Apple"](args.source_path, args.eval, pose_trans_noise=pose_trans_noise, single_frame_id=single_frame_id, voxel_size=voxel_size, init_w_gaussian=init_w_gaussian)
         else:
             assert False, "Could not recognize scene type!"
@@ -80,6 +81,9 @@ class Scene:
         if shuffle:
             random.shuffle(scene_info.train_cameras)  # Multi-res consistent random shuffling
             random.shuffle(scene_info.test_cameras)  # Multi-res consistent random shuffling
+            if scene_info.pseudo_cameras:
+                random.shuffle(scene_info.pseudo_cameras)  # Multi-res consistent random shuffling
+
 
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
@@ -88,6 +92,9 @@ class Scene:
             self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args)
             print("Loading Test Cameras")
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
+
+            if scene_info.pseudo_cameras:
+                self.pseudo_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.pseudo_cameras, resolution_scale, args)
 
         if self.loaded_iter:
             self.gaussians.load_ply(os.path.join(self.model_path,
@@ -109,3 +116,6 @@ class Scene:
 
     def getTestCameras(self, scale=1.0):
         return self.test_cameras[scale]
+
+    def getPseudoCameras(self, scale=1.0):
+        return self.pseudo_cameras[scale]

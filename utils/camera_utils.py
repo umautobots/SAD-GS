@@ -60,7 +60,7 @@ def loadCam(args, id, cam_info, resolution_scale):
         loaded_mask = resized_image_rgb[3:4, ...]
 
     return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
-                  FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
+                  FoVx=cam_info.FovX, FoVy=cam_info.FovY, Cx=cam_info.Cx, Cy=cam_info.Cy, 
                   image=gt_image, gt_alpha_mask=loaded_mask,
                   image_name=cam_info.image_name, uid=id, data_device=args.data_device, depth=gt_depth, R_gt=cam_info.R_gt, T_gt=cam_info.T_gt,
                   mat=cam_info.mat,
