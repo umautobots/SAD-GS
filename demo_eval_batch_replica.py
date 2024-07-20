@@ -4,7 +4,8 @@ import subprocess
 
 cuda_device=1
 
-data='/mnt/ws-frb/projects/gaussian_splatting/data_for_original_gs/replica/office0'
+data = '/mnt/ws-frb/projects/gaussian_splatting/data_for_original_gs/replica/office0'
+output_path = '/mnt/ws-frb/users/frank/frank/gaussian_splatting/'
 iter = '2000'
 frame_ids = '79'
 
@@ -24,9 +25,9 @@ file_names = [name.strip() for name in file_names if name[0]!='#']
 
 # Iterate over each file name and run the command
 for name in file_names:
-    command = f"CUDA_VISIBLE_DEVICES={cuda_device} python render.py -s {data} -m /mnt/ws-frb/users/frank/frank/gaussian_splatting/{name} --iteration {iter} \
+    command = f"CUDA_VISIBLE_DEVICES={cuda_device} python render.py -s {data} -m {output_path}{name} --iteration {iter} \
                     --single_frame_id {frame_ids} {rendering_flags}"
     subprocess.run(command, shell=True)
 
-    command = f"CUDA_VISIBLE_DEVICES={cuda_device} python metrics.py -m /mnt/ws-frb/users/frank/frank/gaussian_splatting/{name} --iteration {iter} {evaluating_flags}"
+    command = f"CUDA_VISIBLE_DEVICES={cuda_device} python metrics.py -m {output_path}{name} --iteration {iter} {evaluating_flags}"
     subprocess.run(command, shell=True)
