@@ -1,14 +1,18 @@
 # **SAD-GS**: **S**hape-**A**ligned **D**epth-supervised **G**aussian **S**platting
 
-### [Paper](https://openaccess.thecvf.com/content/CVPR2024W/NRI/papers/Kung_SAD-GS_Shape-aligned_Depth-supervised_Gaussian_Splatting_CVPRW_2024_paper.pdf) | [Project Page](https://umautobots.github.io/sad_gs)
-
-<div align="center">
-<img src="./assets/replica_rendering_bev_full_width.png" width="80%" />
-</div>
-
 <p align="center">
 <strong>Pou-Chun Kung</strong>, <strong>Seth Isaacson</strong>, <strong>Ram Vasudevan</strong>, and <strong>Katherine A. Skinner</strong> <br>
 {pckung, sethgi, ramv, kskin}@umich.edu
+</p>
+
+### [Paper](https://openaccess.thecvf.com/content/CVPR2024W/NRI/papers/Kung_SAD-GS_Shape-aligned_Depth-supervised_Gaussian_Splatting_CVPRW_2024_paper.pdf) | [Project Page](https://umautobots.github.io/sad_gs)
+
+
+<div align="center">
+<img src="./assets/replica_rendering_bev_full_width.png" width="100%" />
+</div>
+<p align="center">
+Novel view synthesis results from Gaussian Splat using only a single RGBD frame for training.
 </p>
 
 **Abstract**: *This paper proposes SAD-GS, a depth-supervised Gaussian Splatting (GS) method that provides accurate 3D geometry reconstruction by introducing a shapealigned depth supervision strategy. Depth information is widely used in various GS applications, such as dynamic scene reconstruction, real-time simultaneous localization and mapping, and few-shot reconstruction. However, existing depth-supervised methods for GS all focus on the center and neglect the shape of Gaussians during training. This oversight can result in inaccurate surface geometry in the reconstruction and can harm downstream tasks like novel view synthesis, mesh reconstruction, and robot path planning. To address
@@ -23,20 +27,34 @@ For research inquiries, please contact:
 
 - Pou-Chun (Frank) Kung: pckung [at] umich [dot] edu
 
+## Cloning the Repository
+```shell
+git clone https://github.com/umautobots/SAD-GS --recursive
+```
+
 ## Prerequisites
+Setup the gaussian_splatting conda environment:
+```shell
+conda env create --file environment.yml
+conda activate gaussian_splatting
+```
+Please see [Gaussian Splatting repo](https://github.com/graphdeco-inria/gaussian-splatting) for more details.
 
 ## Quick Start
 
-Please change `data` to the path of the Replica dataset and `output_path` to where you want to save the results.
+Please change `data` to the path of the Replica dataset and `output_path` to where you want to save the results in `demo_run_batch_replica.py` and `demo_eval_batch_replica`. You can also change the `cuda_device` to use the assigned gpu accordingly.
 
-To run all the baselines and SAD-GS on the Replica dataset
+To run all the baselines and the proposed SAD-GS on the Replica dataset
 ```shell
 python demo_run_batch_replica.py
 ```
+This command will run all the baseline configurations and the proposed SAG-GS. The results will be saved in the `output_path` folder.
+
 To run evaluation and visualize renders:
 ```shell
-python demo_run_batch_replica.py
+python demo_eval_batch_replica.py
 ```
+This command will run novel view rendering using the trained Gaussian Splat. Then, evaluate the render with ground-truth images. The render evaluation (PSNR/LPIPS/SSIM) for full image and seen region in the paper can be found in `ours_2000_img_eval_results_masked.json` and `ours_2000_img_eval_results_seen_masked.json` files. You can also find the rendered images in the `test_masked` and `test_seen_masked` folders.
 
 ## BibTeX
 
