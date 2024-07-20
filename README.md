@@ -3,7 +3,7 @@
 ### [Paper](https://openaccess.thecvf.com/content/CVPR2024W/NRI/papers/Kung_SAD-GS_Shape-aligned_Depth-supervised_Gaussian_Splatting_CVPRW_2024_paper.pdf) | [Project Page](https://umautobots.github.io/sad_gs)
 
 <div align="center">
-<img src="./assets/fig1_v2.PNG" width="50%" />
+<img src="./assets/replica_rendering_bev_full_width.png" width="80%" />
 </div>
 
 <p align="center">
