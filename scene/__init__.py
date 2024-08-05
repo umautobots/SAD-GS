@@ -22,7 +22,7 @@ class Scene:
 
     gaussians : GaussianModel
 
-    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0], pose_trans_noise=0, single_frame_id=None, voxel_size=None, init_w_gaussian=False, load_ply=False, use_pseudo_cam=False):
+    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0], single_frame_id=None, voxel_size=None, init_w_gaussian=False, load_ply=False, use_pseudo_cam=False):
         """b
         :param path: Path to colmap scene main folder.
         """
@@ -48,19 +48,10 @@ class Scene:
             scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.eval, load_ply=load_ply)
         elif os.path.exists(os.path.join(args.source_path, "traj.txt")):
             print("Found traj.txt file, assuming Replica data set!")
-            scene_info = sceneLoadTypeCallbacks["Replica"](args.source_path, args.eval, pose_trans_noise=pose_trans_noise, single_frame_id=single_frame_id, voxel_size=voxel_size, init_w_gaussian=init_w_gaussian, load_ply=load_ply)
+            scene_info = sceneLoadTypeCallbacks["Replica"](args.source_path, args.eval, single_frame_id=single_frame_id, voxel_size=voxel_size, init_w_gaussian=init_w_gaussian, load_ply=load_ply)
         elif os.path.exists(os.path.join(args.source_path, "groundtruth.txt")):
             print("Found groundtruth.txt file, assuming TUM data set!")
-            scene_info = sceneLoadTypeCallbacks["TUM"](args.source_path, args.eval, pose_trans_noise=pose_trans_noise, single_frame_id=single_frame_id, voxel_size=voxel_size, init_w_gaussian=init_w_gaussian, load_ply=load_ply, use_pseudo_cam=use_pseudo_cam)
-        elif os.path.exists(os.path.join(args.source_path, "depot_groundtruth.txt")):
-            print("Found depot_groundtruth.txt file, assuming Depot data set!")
-            scene_info = sceneLoadTypeCallbacks["Depot"](args.source_path, args.eval, pose_trans_noise=pose_trans_noise, single_frame_id=single_frame_id, voxel_size=voxel_size, init_w_gaussian=init_w_gaussian, load_ply=load_ply)
-        elif os.path.exists(os.path.join(args.source_path, "cam_poses.txt")):
-            print("Found cam_poses.txt file, assuming WildRGBD data set!")
-            scene_info = sceneLoadTypeCallbacks["WildRGBD"](args.source_path, args.eval, pose_trans_noise=pose_trans_noise, single_frame_id=single_frame_id, voxel_size=voxel_size, init_w_gaussian=init_w_gaussian)
-        elif os.path.exists(os.path.join(args.source_path, "record3d")):
-            print("Found record3d file, assuming record3d data set!")
-            scene_info = sceneLoadTypeCallbacks["Apple"](args.source_path, args.eval, pose_trans_noise=pose_trans_noise, single_frame_id=single_frame_id, voxel_size=voxel_size, init_w_gaussian=init_w_gaussian)
+            scene_info = sceneLoadTypeCallbacks["TUM"](args.source_path, args.eval, single_frame_id=single_frame_id, voxel_size=voxel_size, init_w_gaussian=init_w_gaussian, load_ply=load_ply, use_pseudo_cam=use_pseudo_cam)
         else:
             assert False, "Could not recognize scene type!"
 

@@ -40,8 +40,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         tanfovy=tanfovy,
         bg=bg_color,
         scale_modifier=scaling_modifier,
-        # viewmatrix=viewpoint_camera.world_view_transform,
-        # projmatrix=viewpoint_camera.full_proj_transform,
+        viewmatrix=viewpoint_camera.get_world_view_transform(),
+        projmatrix=viewpoint_camera.get_full_proj_transform(),
         sh_degree=pc.active_sh_degree,
         campos=viewpoint_camera.get_camera_center(),
         prefiltered=False,
@@ -83,8 +83,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen).
          
-    # rendered_image, radii, depth, depth_var, alpha = rasterizer(
-    rendered_image, radii, depth, alpha, gaussians_count, important_score = rasterizer(
+    rendered_image, radii, depth, alpha = rasterizer(
         means3D = means3D,
         means2D = means2D,
         shs = shs,
@@ -92,13 +91,9 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         opacities = opacity,
         scales = scales,
         rotations = rotations,
-        cov3D_precomp = cov3D_precomp,
-        viewmatrix = viewpoint_camera.get_world_view_transform(), # Add for gradient propagation
-        projmatrix = viewpoint_camera.get_full_proj_transform() # Add for gradient propagation
+        cov3D_precomp = cov3D_precomp
         )
-    
-    # print('depth_var.shape: ', depth_var.shape)
-
+        
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
     return {"render": rendered_image,
@@ -106,7 +101,4 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             "visibility_filter" : radii > 0,
             "radii": radii,
             "depth": depth,
-            # "depth_var": depth_var,
-            "alpha": alpha,
-            "gaussians_count": gaussians_count,
-            "important_score": important_score}
+            "alpha": alpha}

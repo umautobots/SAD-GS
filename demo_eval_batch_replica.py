@@ -2,7 +2,7 @@
 
 import subprocess
 
-cuda_device=1
+cuda_device=0
 
 data = '/mnt/ws-frb/projects/gaussian_splatting/data_for_original_gs/replica/office0'
 output_path = '/mnt/ws-frb/users/frank/frank/gaussian_splatting/'

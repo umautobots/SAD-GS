@@ -104,7 +104,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, depths_fold
         width = intr.width
 
         uid = intr.id
-        R = np.transpose(qvec2rotmat(extr.qvec)) # R_colmap.T !!!!!!
+        R = np.transpose(qvec2rotmat(extr.qvec)) # R_colmap.T
         T = np.array(extr.tvec)
 
         if intr.model=="SIMPLE_PINHOLE":
@@ -320,7 +320,7 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
                            ply_path=ply_path)
     return scene_info
 
-def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_id=None, voxel_size=None, init_w_gaussian=False, load_ply=False):
+def readReplicaInfo(path, eval, extension=".png", single_frame_id=None, voxel_size=None, init_w_gaussian=False, load_ply=False):
     traj_file = os.path.join(path, 'traj.txt')
     with open(traj_file, 'r') as poses_file:
         poses = poses_file.readlines()
@@ -346,8 +346,6 @@ def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_fra
     color_init = np.zeros((0,3))
 
     for idx, (image_path, depth_path) in enumerate(zip(image_paths, depth_paths)):
-        # if (single_frame_id is not None) and (idx is not single_frame_id):
-        #     continue
         mat = np.array(poses[idx].split('\n')[0].split(' ')).reshape((4,4)).astype('float64')
         mat_list.append(mat)
 
@@ -356,12 +354,6 @@ def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_fra
 
         R_gt=R.copy()
         T_gt=T.copy()
-        
-        # Add noise to poses
-        if pose_trans_noise > 0:
-            np.random.seed(0)
-            noise = np.random.rand(3) * pose_trans_noise
-            T += noise
 
         # Invert
         T = -R.T @ T # convert from real world to GS format: R=R, T=T.inv()
@@ -447,27 +439,6 @@ def readReplicaInfo(path, eval, extension=".png", pose_trans_noise=0, single_fra
             color_init = np.asarray(o3d_pcd.colors)
             pcd = BasicPointCloud(points=pc_init, colors=color_init, normals=np.zeros((pc_init.shape[0], 3)))
 
-    # for mat in mat_list:
-    #     axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-    #     axis_mesh.scale(0.1, center=axis_mesh.get_center())
-    #     mesh = axis_mesh.transform(mat)
-    #     viz_list.append(mesh)
-
-    # o3d_pcd = o3d.geometry.PointCloud()
-    # o3d_pcd.points = o3d.utility.Vector3dVector(pc_init)  
-    # o3d_pcd.colors = o3d.utility.Vector3dVector(color_init)    
-    # viz_list.append(o3d_pcd)
-
-    # axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-    # viz_list.append(axis_mesh)
-
-    # axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-    # mesh = axis_mesh.translate((1,0,0))
-    # axis_mesh.scale(0.5, center=axis_mesh.get_center())
-    # viz_list.append(axis_mesh)
-
-    # o3d.visualization.draw_geometries(viz_list)
-
     scene_info = SceneInfo(point_cloud=pcd,
                            train_cameras=train_cam_infos,
                            test_cameras=test_cam_infos,
@@ -502,7 +473,7 @@ def build_tum_poses_from_df(df: pd.DataFrame, zero_origin=False):
 
     return poses.float(), ts
 
-def readTUMInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_id=None, voxel_size=None, init_w_gaussian=False, load_ply=False, use_pseudo_cam=False):
+def readTUMInfo(path, eval, extension=".png", single_frame_id=None, voxel_size=None, init_w_gaussian=False, load_ply=False, use_pseudo_cam=False):
     folder_name = os.path.basename(path)
         
     traj_file = os.path.join(path, 'groundtruth.txt')
@@ -562,13 +533,6 @@ def readTUMInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_i
 
     for img_idx, depth_idx, pose_idx in associations:
 
-        # if img_idx>300 or img_idx%10!=0:
-        #     continue
-        
-        # TEMP
-        # if len(single_frame_id)>0 and (img_idx not in single_frame_id):
-        #     continue
-
         mat = np.array(poses[pose_idx])
         mat_list.append(mat)
         R = mat[:3,:3]
@@ -576,12 +540,6 @@ def readTUMInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_i
 
         R_gt=R.copy()
         T_gt=T.copy()
-        
-        # Add noise to poses
-        if pose_trans_noise > 0:
-            np.random.seed(0)
-            noise = np.random.rand(3) * pose_trans_noise
-            T += noise
 
         # Invert
         T = -R.T @ T # convert from real world to GS format: R=R, T=T.inv()
@@ -620,8 +578,6 @@ def readTUMInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_i
             rgbd_img = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d_image, o3d_depth, depth_scale=depth_scale, depth_trunc=1000, convert_rgb_to_intensity=False)
             o3d_pc = o3d.geometry.PointCloud.create_from_rgbd_image(image=rgbd_img, intrinsic=o3d_intrinsic, extrinsic=np.identity(4))
             o3d_pc = o3d_pc.transform(mat)
-
-            # o3d.visualization.draw_geometries([o3d_pc])
 
             raw_pc = np.asarray(o3d_pc.points)
             kdtree = KDTree(raw_pc)
@@ -702,9 +658,7 @@ def readTUMInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_i
             o3d_pc = o3d_pc.transform(mat)
             pc_init = np.concatenate((pc_init, np.asarray(o3d_pc.points)), axis=0)
             color_init = np.concatenate((color_init, np.asarray(o3d_pc.colors)), axis=0)
-            
-            # o3d.visualization.draw_geometries([o3d_pc])
-        
+                    
         num_pts = pc_init.shape[0]
         xyz = pc_init
         # color_init = np.ones_like(color_init) # !!! initialize all color to white for viz
@@ -735,32 +689,10 @@ def readTUMInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_i
             color_init = np.asarray(o3d_pcd.colors)
             pcd = BasicPointCloud(points=pc_init, colors=color_init, normals=np.zeros((pc_init.shape[0], 3)))
 
-    # mat = mat_list[0]
-    # axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-    # axis_mesh.scale(0.5, center=axis_mesh.get_center())
-    # mesh = axis_mesh.transform(mat)
-    # viz_list.append(mesh)
-    
-    # for mat in mat_list:
-    #     axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-    #     axis_mesh.scale(0.1, center=axis_mesh.get_center())
-    #     mesh = axis_mesh.transform(mat)
-    #     viz_list.append(mesh)
-
     o3d_pcd = o3d.geometry.PointCloud()
     o3d_pcd.points = o3d.utility.Vector3dVector(pc_init)  
     o3d_pcd.colors = o3d.utility.Vector3dVector(color_init)
     viz_list.append(o3d_pcd)
-
-    # axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-    # viz_list.append(axis_mesh)
-
-    # axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-    # mesh = axis_mesh.translate((1,0,0))
-    # axis_mesh.scale(0.5, center=axis_mesh.get_center())
-    # viz_list.append(axis_mesh)
-
-    # o3d.visualization.draw_geometries(viz_list)
 
     scene_info = SceneInfo(point_cloud=pcd,
                            train_cameras=train_cam_infos,
@@ -771,504 +703,11 @@ def readTUMInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_i
                            gaussian_init=gaussian_init)
     return scene_info
 
-def readDepotInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_id=None, voxel_size=None, init_w_gaussian=False, load_ply=False):
-    folder_name = os.path.basename(path)
-        
-    traj_file = os.path.join(path, 'depot_groundtruth.txt')
-    ground_truth_df = pd.read_csv(traj_file, names=["timestamp","x","y","z","q_x","q_y","q_z","q_w"], delimiter=" ")
-    ground_truth_df = ground_truth_df.drop(ground_truth_df[(ground_truth_df.timestamp == '#')].index)
-    poses, timestamps = build_tum_poses_from_df(ground_truth_df, False)
-    ts_pose = np.asarray([t for t in timestamps])
-
-    image_ts_file = os.path.join(path, 'rgb.txt')
-    depth_ts_file = os.path.join(path, 'depth.txt')
-    image_data = np.loadtxt(image_ts_file, delimiter=' ', dtype=np.unicode_, skiprows=0)
-    depth_data = np.loadtxt(depth_ts_file, delimiter=' ', dtype=np.unicode_, skiprows=0)
-    ts_image = image_data[:, 0].astype(np.float64)
-    ts_depth = depth_data[:, 0].astype(np.float64)
-    
-    associations = []
-    ts_interval = 0.5 # (s)
-    last_ts = None
-    for img_idx, img_ts in enumerate(ts_image):
-        if last_ts !=None and (img_ts-last_ts < ts_interval):
-            continue
-        # print('selected idx: ', img_idx, ' ts: ', img_ts)
-        # if img_idx>10:
-        #     continue
-        last_ts = img_ts
-
-        depth_idx = np.argmin(np.abs(ts_depth - img_ts))
-        pose_idx = np.argmin(np.abs(ts_pose - img_ts))
-        associations.append((img_idx, depth_idx, pose_idx))
-    
-    cam_infos = []
-    test_cam_infos = []
-    mat_list=[]
-    pc_init = np.zeros((0,3))
-    color_init = np.zeros((0,3))
-    
-    height = 720 #1080
-    width = 1280 #1920
-    fx, fy, cx, cy = 360, 360, 640, 360 #540, 540, 960, 540
-    # depth_scale = 100 #10.
-    
-    FovY = focal2fov(fy, height) # check where to incoorporate cx, cy
-    FovX = focal2fov(fx, width)
-        
-    for img_idx, depth_idx, pose_idx in associations:
-        # TEMP
-        if len(single_frame_id)>0 and (img_idx not in single_frame_id):
-            continue
-        
-        mat = np.array(poses[pose_idx])
-        mat_list.append(mat)
-        R = mat[:3,:3]
-        T = mat[:3, 3]
-
-        R_gt=R.copy()
-        T_gt=T.copy()
-        
-        # Add noise to poses
-        if pose_trans_noise > 0:
-            np.random.seed(0)
-            noise = np.random.rand(3) * pose_trans_noise
-            T += noise
-
-        # Invert
-        T = -R.T @ T # convert from real world to GS format: R=R, T=T.inv()
-        T_gt = -R_gt.T @ T_gt # convert from real world to GS format: R=R, T=T.inv()
-        
-        image_path = f"{path}/"+image_data[img_idx][1]
-        depth_path = f"{path}/"+depth_data[depth_idx][1]
-        temp = Image.open(image_path)
-        image = temp.copy()
-        temp = Image.open(depth_path)
-        depth = temp.copy()
-        temp.close()
-
-        # depth_scaled = np.array(depth) / depth_scale
-        depth_scaled = Image.fromarray(((100 - 0.5)*(np.array(depth)/255.) + 0.5)*255)
-        # depth_scaled = Image.fromarray(np.zeros((image.size[1], image.size[0]))) # !!!!!!!!!!!!!!!!!!!!!
-
-        image_name = os.path.basename(image_path).split(".png")[0]
-
-        if len(single_frame_id)>0 and (img_idx not in single_frame_id):
-            continue # TODO: skip adding test_cam since there are too many frames in TUM
-            # cam_info = CameraInfo(uid=img_idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-            #                     image_path=image_path, image_name=image_name, width=width, height=height, depth=depth_scaled, R_gt=R_gt, T_gt=T_gt,
-            #                     mat=None, raw_pc=None, kdtree=None)
-            # test_cam_infos.append(cam_info)
-        else:
-            depth_real = ((100 - 0.5)*(np.array(depth)/255.) + 0.5)
-            o3d_depth = o3d.geometry.Image(np.array(depth_real).astype(np.float32))
-            o3d_image = o3d.geometry.Image(np.array(image).astype(np.uint8))
-            o3d_intrinsic = o3d.camera.PinholeCameraIntrinsic(width, height, fx, fy, cx, cy)
-            rgbd_img = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d_image, o3d_depth, depth_scale=1., depth_trunc=1000, convert_rgb_to_intensity=False)
-            o3d_pc = o3d.geometry.PointCloud.create_from_rgbd_image(image=rgbd_img, intrinsic=o3d_intrinsic, extrinsic=np.identity(4))
-            o3d_pc = o3d_pc.transform(mat)
-            raw_pc = np.asarray(o3d_pc.points)
-            kdtree = KDTree(raw_pc)
-            cam_info = CameraInfo(uid=img_idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                                image_path=image_path, image_name=image_name, width=width, height=height, depth=depth_scaled, R_gt=R_gt, T_gt=T_gt,
-                                mat=mat, raw_pc=raw_pc, kdtree=kdtree)
-            cam_infos.append(cam_info)
-    
-    train_cam_infos = cam_infos
-
-    nerf_normalization = getNerfppNorm(train_cam_infos)
-
-    print('get init points')
-
-    ply_path = os.path.join(path, "points3d.ply")
-    if not load_ply:
-        
-        # # Load sationary lidar data
-        # npy_path = os.path.join(path, "pointcloud.npy")
-        # np_pc = np.load(npy_path)
-        # print('read: ', np_pc.shape)
-        # o3d_pcd = o3d.geometry.PointCloud()
-        # o3d_pcd.points = o3d.utility.Vector3dVector(np_pc)  
-        # o3d_pcd.colors = o3d.utility.Vector3dVector(np.ones_like(np_pc))    
-
-        # translation = np.array([0, 0, 3.0066])
-        # quaternion = np.array([0, 0, 0.718392014503, -0.695638477802])
-        # rotation = Rotation.from_quat(quaternion)
-        # rotation_matrix = rotation.as_matrix()
-        # tf_mat = np.eye(4)
-        # tf_mat[:3, :3] = rotation_matrix
-        # tf_mat[:3, 3] = translation
-        # o3d_pcd = o3d_pcd.transform(tf_mat)    
-        # storePly(ply_path, np.array(o3d_pcd.points), np.array(o3d_pcd.colors)*255.)
-        # print('save pcd')
-
-        max_dt = 0.05 # 1.0 / FPS *  1.1
-        associations = []
-        for img_idx, img_ts in enumerate(ts_image):
-            depth_idx = np.argmin(np.abs(ts_depth - img_ts))
-            pose_idx = np.argmin(np.abs(ts_pose - img_ts))
-            if (np.abs(ts_depth[depth_idx] - img_ts) < max_dt) and \
-                    (np.abs(ts_pose[pose_idx] - img_ts) < max_dt):
-                # print('selected idx: ', img_idx, ' ts: ', img_ts, 'depth ts: ', ts_depth[depth_idx])
-                associations.append((img_idx, depth_idx, pose_idx))
-
-        for img_idx, depth_idx, pose_idx in associations:
-            if len(single_frame_id)>0 and (img_idx not in single_frame_id):
-                continue
-            
-            if img_idx%100!=0:  #img_idx!=0 and img_idx!=10:
-                continue
-
-            mat = np.array(poses[pose_idx])
-            image_path = f"{path}/"+image_data[img_idx][1]
-            depth_path = f"{path}/"+depth_data[depth_idx][1]
-            temp = Image.open(image_path)
-            image = temp.copy()
-            temp = Image.open(depth_path)
-            depth = np.array(temp.copy())/255.
-            depth = (100 - 0.5)*(np.array(depth)) + 0.5
-
-            temp.close()
-            o3d_depth = o3d.geometry.Image(np.array(depth).astype(np.float32))
-            o3d_image = o3d.geometry.Image(np.array(image).astype(np.uint8))
-            o3d_intrinsic = o3d.camera.PinholeCameraIntrinsic(width, height, fx, fy, cx, cy) # w, h, fx, fy, cx, cy
-            rgbd_img = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d_image, o3d_depth, depth_scale=1., depth_trunc=1000, convert_rgb_to_intensity=False)
-            o3d_pc = o3d.geometry.PointCloud.create_from_rgbd_image(image=rgbd_img, intrinsic=o3d_intrinsic, extrinsic=np.identity(4))
-            # o3d.visualization.draw_geometries([o3d_pc])
-
-            o3d_pc = o3d_pc.transform(mat)
-            # o3d_pc = o3d_pc.voxel_down_sample(0.05)
-            pc_init = np.concatenate((pc_init, np.asarray(o3d_pc.points)), axis=0)
-            color_init = np.concatenate((color_init, np.asarray(o3d_pc.colors)), axis=0)
-
-            # if img_idx==10:
-            #     color_init = np.concatenate((color_init, np.zeros_like(o3d_pc.colors)), axis=0)
-            # else:
-            #     color_init = np.concatenate((color_init, np.asarray(o3d_pc.colors)), axis=0)
-
-                    
-        num_pts = pc_init.shape[0]
-        xyz = pc_init
-        # color_init = np.ones_like(color_init) # !!! initialize all color to white for viz
-        pcd = BasicPointCloud(points=xyz, colors=color_init, normals=np.zeros((num_pts, 3)))
-        storePly(ply_path, pc_init, color_init*255)
-        print('save pcd')
-
-    try:
-        pcd = fetchPly(ply_path)
-        print('read: ', pcd.points.shape)
-    except:
-        pcd = None
-    
-    o3d_pcd = o3d.geometry.PointCloud()
-    o3d_pcd.points = o3d.utility.Vector3dVector(pcd.points)
-    o3d_pcd.colors = o3d.utility.Vector3dVector(pcd.colors)
-
-    gaussian_init = None
-    if init_w_gaussian:
-        mean_xyz, mean_rgb, cov = precompute_gaussians(torch.tensor(pcd.points).to('cuda'), torch.tensor(pcd.colors).to('cuda'), voxel_size)
-        gaussian_init={"mean_xyz": mean_xyz, "mean_rgb": mean_rgb, "cov": cov}
-    else:
-        if voxel_size is not None:
-            # downsample
-            o3d_pcd = o3d_pcd.voxel_down_sample(voxel_size)
-            pc_init = np.asarray(o3d_pcd.points)
-            color_init = np.asarray(o3d_pcd.colors)
-            pcd = BasicPointCloud(points=pc_init, colors=color_init, normals=np.zeros((pc_init.shape[0], 3)))
-
-    # viz_list=[]
-    # axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-    # axis_mesh.scale(1., center=axis_mesh.get_center())
-    # mesh = axis_mesh.transform(mat_list[0])
-    # viz_list.append(mesh)
-    # for mat in mat_list:
-    #     axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-    #     axis_mesh.scale(1., center=axis_mesh.get_center())
-    #     mesh = axis_mesh.transform(mat)
-    #     viz_list.append(mesh)
-
-    # axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-    # axis_mesh.scale(10, center=axis_mesh.get_center())
-    # viz_list.append(axis_mesh)
-
-    # viz_list.append(o3d_pcd)
-
-    # o3d.visualization.draw_geometries(viz_list)
-
-    scene_info = SceneInfo(point_cloud=None, # pcd
-                           train_cameras=train_cam_infos,
-                           test_cameras=test_cam_infos,
-                           nerf_normalization=nerf_normalization,
-                           ply_path=ply_path,
-                           gaussian_init=gaussian_init)
-    return scene_info
-
-
-def readWildRGBDInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_id=None, voxel_size=None, init_w_gaussian=False):
-    traj_file = os.path.join(path, 'cam_poses.txt')
-    poses = np.genfromtxt(traj_file)[:,1:]
-    
-    calib_file = os.path.join(path, 'metadata')
-    f = open(calib_file)
-    data = json.load(f)
-    height = data['h']
-    width = data['w']
-    fx, fy, cx, cy = data['K'][0], data['K'][4], data['K'][6], data['K'][7]
-    FovY = focal2fov(fy, height)
-    FovX = focal2fov(fx, width)
-    depth_scale = 1000.
-    depth_max=1 #5
-        
-    image_paths = sorted(glob.glob(os.path.join(path, 'rgb/*')))
-    depth_paths = sorted(glob.glob(os.path.join(path, 'depth/*')))
-    
-    cam_infos = []
-    test_cam_infos = []
-    mat_list=[]
-    viz_list=[]
-    pc_init = np.zeros((0,3))
-    color_init = np.zeros((0,3))
-
-    for idx, (image_path, depth_path) in enumerate(zip(image_paths, depth_paths)):
-        # if (single_frame_id is not None) and (idx is not single_frame_id):
-        #     continue
-
-        mat = poses[idx].reshape((4,4)).astype('float64')
-        mat_list.append(mat)
-
-        R = mat[:3,:3]
-        T = mat[:3, 3]
-
-        R_gt=R.copy()
-        T_gt=T.copy()
-        
-        # Add noise to poses
-        if pose_trans_noise > 0:
-            np.random.seed(0)
-            noise = np.random.rand(3) * pose_trans_noise
-            T += noise
-
-        # Invert
-        T = -R.T @ T # convert from real world to GS format: R=R, T=T.inv()
-        T_gt = -R_gt.T @ T_gt # convert from real world to GS format: R=R, T=T.inv()
-
-        image_name = os.path.basename(image_path).split(".")[0]
-        image = Image.open(image_path)
-        depth = Image.open(depth_path)
-        
-        depth_scaled = np.array(depth) / depth_scale
-        depth_scaled[depth_scaled>depth_max]=-1
-        depth_scaled = Image.fromarray(depth_scaled*255.)
-        
-        if len(single_frame_id)>0 and (idx not in single_frame_id):
-            cam_info = CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                                image_path=image_path, image_name=image_name, width=width, height=height, depth=depth_scaled, R_gt=R_gt, T_gt=T_gt,
-                                mat=None, raw_pc=None, kdtree=None)
-            test_cam_infos.append(cam_info)
-        else:
-            o3d_depth = o3d.geometry.Image(np.array(depth).astype(np.float32))
-            o3d_image = o3d.geometry.Image(np.array(image).astype(np.uint8))
-            o3d_intrinsic = o3d.camera.PinholeCameraIntrinsic(width, height, fx, fy, cx, cy)
-            rgbd_img = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d_image, o3d_depth, depth_scale=depth_scale, depth_trunc=depth_max, convert_rgb_to_intensity=False)
-            o3d_pc = o3d.geometry.PointCloud.create_from_rgbd_image(image=rgbd_img, intrinsic=o3d_intrinsic, extrinsic=np.identity(4))
-            o3d_pc = o3d_pc.transform(mat)
-            raw_pc = np.asarray(o3d_pc.points)
-            kdtree = KDTree(raw_pc)
-            cam_info = CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                                image_path=image_path, image_name=image_name, width=width, height=height, depth=depth_scaled, R_gt=R_gt, T_gt=T_gt,
-                                mat=mat, # Poses are w.r.t. the original frame
-                                raw_pc=raw_pc,
-                                kdtree=kdtree
-                                )
-            cam_infos.append(cam_info)
-    
-    train_cam_infos = cam_infos
-
-    nerf_normalization = getNerfppNorm(train_cam_infos)
-
-    ply_path = os.path.join(path, "points3d.ply")
-
-    NOT_LOADING=True # TODO
-
-    if not os.path.exists(ply_path) or NOT_LOADING:
-        for idx, (image_path, depth_path) in enumerate(zip(image_paths, depth_paths)):
-            if len(single_frame_id)>0 and (idx not in single_frame_id):
-                continue
-            mat = poses[idx].reshape((4,4)).astype('float64')
-            image = Image.open(image_path)
-            depth = Image.open(depth_path)
-            o3d_depth = o3d.geometry.Image(np.array(depth).astype(np.uint16))
-            o3d_image = o3d.geometry.Image(np.array(image).astype(np.uint8))
-            o3d_intrinsic = o3d.camera.PinholeCameraIntrinsic(width, height, fx, fy, cx, cy)
-            rgbd_img = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d_image, o3d_depth, depth_scale=depth_scale, depth_trunc=depth_max, convert_rgb_to_intensity=False)
-            o3d_pc = o3d.geometry.PointCloud.create_from_rgbd_image(image=rgbd_img, intrinsic=o3d_intrinsic, extrinsic=np.identity(4))
-            dist = np.linalg.norm(np.asarray(o3d_pc.points), axis=1)
-
-            o3d_pc = o3d_pc.transform(mat)
-            pc_init = np.concatenate((pc_init, np.asarray(o3d_pc.points)), axis=0)
-            color_init = np.concatenate((color_init, np.asarray(o3d_pc.colors)), axis=0)
-        
-        num_pts = pc_init.shape[0]
-        xyz = pc_init
-        # color_init = np.ones_like(color_init) # !!! initialize all color to white for viz
-        pcd = BasicPointCloud(points=xyz, colors=color_init, normals=np.zeros((num_pts, 3)))
-        storePly(ply_path, pc_init, color_init*255)
-        print('save pcd')
-        
-        # o3d_pcd = o3d.geometry.PointCloud()
-        # o3d_pcd.points = o3d.utility.Vector3dVector(pc_init)  
-        # o3d_pcd.colors = o3d.utility.Vector3dVector(color_init)    
-        # o3d.visualization.draw_geometries([o3d_pcd])
-    try:
-        pcd = fetchPly(ply_path)
-        print('read: ', pcd.points.shape)
-    except:
-        pcd = None
-    
-    gaussian_init = None
-    if init_w_gaussian:
-        mean_xyz, mean_rgb, cov = precompute_gaussians(torch.tensor(pcd.points).to('cuda'), torch.tensor(pcd.colors).to('cuda'), voxel_size)
-        gaussian_init={"mean_xyz": mean_xyz, "mean_rgb": mean_rgb, "cov": cov}
-    else:
-        if voxel_size is not None:
-            # downsample
-            o3d_pcd = o3d.geometry.PointCloud()
-            o3d_pcd.points = o3d.utility.Vector3dVector(pcd.points)
-            o3d_pcd.colors = o3d.utility.Vector3dVector(pcd.colors)
-            o3d_pcd = o3d_pcd.voxel_down_sample(voxel_size)
-            pc_init = np.asarray(o3d_pcd.points)
-            color_init = np.asarray(o3d_pcd.colors)
-            pcd = BasicPointCloud(points=pc_init, colors=color_init, normals=np.zeros((pc_init.shape[0], 3)))
-
-    # for mat in mat_list:
-    #     axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-    #     axis_mesh.scale(0.1, center=axis_mesh.get_center())
-    #     mesh = axis_mesh.transform(mat)
-    #     viz_list.append(mesh)
-
-    # o3d_pcd = o3d.geometry.PointCloud()
-    # o3d_pcd.points = o3d.utility.Vector3dVector(pc_init)  
-    # o3d_pcd.colors = o3d.utility.Vector3dVector(color_init)    
-    # viz_list.append(o3d_pcd)
-
-    # axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-    # viz_list.append(axis_mesh)
-
-    # axis_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame()
-    # mesh = axis_mesh.translate((1,0,0))
-    # axis_mesh.scale(0.5, center=axis_mesh.get_center())
-    # viz_list.append(axis_mesh)
-
-    # o3d.visualization.draw_geometries(viz_list)
-
-    scene_info = SceneInfo(point_cloud=pcd,
-                           train_cameras=train_cam_infos,
-                           test_cameras=test_cam_infos,
-                           nerf_normalization=nerf_normalization,
-                           ply_path=ply_path,
-                           gaussian_init=gaussian_init)
-    return scene_info
-
-
-def readIPhoneInfo(path, eval, extension=".png", pose_trans_noise=0, single_frame_id=None, voxel_size=None, init_w_gaussian=False):
-    print('readIPhoneInfo')
-    print(path)
-    single_frame_id = single_frame_id[0]
-        
-    height = 640
-    width = 480
-    fx = 427.82
-    fy = 427.82
-    cx = 240
-    cy = 320
-    
-    R = np.identity(3)
-    R_gt = R
-    T = np.array([0,0,0])
-    T_gt = T
-    mat= np.identity(4)
-
-    FovY = focal2fov(fy, height)
-    FovX = focal2fov(fx, width)
-    
-    image_path = os.path.join(path, 'rgb', f'{single_frame_id}.png')
-    depth_path = os.path.join(path, 'depth', f'{single_frame_id}.npy')
-    
-    image = Image.open(image_path)
-    depth = np.load(depth_path)
-    depth[np.isnan(depth)]=0
-    
-    max_depth = 0.55 # only < 1m !!!!!!!!!!!!!!!!!
-    depth[depth>max_depth]=0
-    
-    depth_scaled = Image.fromarray(np.array(depth) * 255.)
-    
-    o3d_depth = o3d.geometry.Image(np.array(depth).astype(np.float32))
-    o3d_image = o3d.geometry.Image(np.array(image).astype(np.uint8))
-    o3d_intrinsic = o3d.camera.PinholeCameraIntrinsic(height, width, fx, fy, cx, cy) # fx, fy, cx, cy
-    rgbd_img = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d_image, o3d_depth, depth_scale=1, depth_trunc=1000, convert_rgb_to_intensity=False)
-    o3d_pc = o3d.geometry.PointCloud.create_from_rgbd_image(image=rgbd_img, intrinsic=o3d_intrinsic, extrinsic=np.identity(4))
-    o3d_pc = o3d_pc.transform(mat)
-    # o3d.visualization.draw_geometries([o3d_pc])
-    
-    raw_pc = np.asarray(o3d_pc.points)
-    kdtree = KDTree(raw_pc)
-    
-    cam_info = CameraInfo(uid=single_frame_id, R=R, T=T, FovY=FovY, FovX=FovX, Cy=cy, Cx=cx, image=image,
-                        image_path=image_path, image_name=image_path, width=width, height=height, depth=depth_scaled, R_gt=R_gt, T_gt=T_gt,
-                        mat=mat, # Poses are w.r.t. the original frame
-                        raw_pc=raw_pc,
-                        kdtree=kdtree
-                        )
-    cam_infos = []
-    test_cam_infos=[]
-    
-    cam_infos.append(cam_info)
-    train_cam_infos = cam_infos
-    nerf_normalization = getNerfppNorm(train_cam_infos)
-    
-    ### for init pc
-    pc_init = np.asarray(o3d_pc.points)
-    color_init = np.asarray(o3d_pc.colors)
-    
-    ply_path = os.path.join(path, "points3d.ply")
-    num_pts = pc_init.shape[0]
-    xyz = pc_init
-    pcd = BasicPointCloud(points=xyz, colors=color_init, normals=np.zeros((num_pts, 3)))
-    storePly(ply_path, pc_init, color_init*255)
-    print('save pcd')
-    
-    gaussian_init = None
-    if init_w_gaussian:
-        mean_xyz, mean_rgb, cov = precompute_gaussians(torch.tensor(pcd.points).to('cuda'), torch.tensor(pcd.colors).to('cuda'), voxel_size)
-        gaussian_init={"mean_xyz": mean_xyz, "mean_rgb": mean_rgb, "cov": cov}
-    else:
-        if voxel_size is not None:
-            # downsample
-            o3d_pcd = o3d.geometry.PointCloud()
-            o3d_pcd.points = o3d.utility.Vector3dVector(pcd.points)
-            o3d_pcd.colors = o3d.utility.Vector3dVector(pcd.colors)
-            o3d_pcd = o3d_pcd.voxel_down_sample(voxel_size)
-            pc_init = np.asarray(o3d_pcd.points)
-            color_init = np.asarray(o3d_pcd.colors)
-            pcd = BasicPointCloud(points=pc_init, colors=color_init, normals=np.zeros((pc_init.shape[0], 3)))
-
-    scene_info = SceneInfo(point_cloud=pcd,
-                           train_cameras=train_cam_infos,
-                           test_cameras=test_cam_infos,
-                           nerf_normalization=nerf_normalization,
-                           ply_path=ply_path,
-                           gaussian_init=gaussian_init)
-    return scene_info
-            
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
     "Blender" : readNerfSyntheticInfo,
     "Replica" : readReplicaInfo,
     "TUM" : readTUMInfo,
-    "Depot" : readDepotInfo,
-    "WildRGBD" : readWildRGBDInfo,
-    "Apple" : readIPhoneInfo
 }
 
 def segment_point_cloud(voxel_grid, pcd, voxel_size):

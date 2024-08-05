@@ -3,8 +3,8 @@
 	url = https://gitlab.inria.fr/bkerbl/simple-knn.git
 [submodule "submodules/diff-gaussian-rasterization"]
 	path = submodules/diff-gaussian-rasterization
-	url = git@gitlab.eecs.umich.edu:umfordav/diff-gaussian-rasterization.git
-	branch = hit_count
+	url = https://github.com/umautobots/diff-gaussian-rasterization
+	branch = depth_rendering
 [submodule "SIBR_viewers"]
 	path = SIBR_viewers
 	url = https://gitlab.inria.fr/sibr/sibr_core.git

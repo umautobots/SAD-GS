@@ -10,7 +10,7 @@ frame_ids = '79'
 voxel_size=0.1
 suffix=''
 
-cuda_device='1'
+cuda_device='0'
 save_iterations = '1 500 1000 2000 2200'
 opacity_reset_interval='1000' # default: 3000
 
@@ -55,5 +55,5 @@ subprocess.run(command+suffix, shell=True)
 # Ours
 command = f"CUDA_VISIBLE_DEVICES={cuda_device} python train.py -s {data}\
             -m {output_path}{folder_path}/SAD_GS --single_frame_id {frame_ids}\
-            --save_iterations {save_iterations} --iterations {iter} --checkpoint_iterations {iter} --init_w_gaussian --voxel_size {voxel_size} --densify_from_iter 100 --opacity_reset_interval {opacity_reset_interval} --CS 10 --cls_loss --full_reset_opa --position_lr_init 0.000016 --feature_lr 0.00025 --opacity_lr 0.005 --scaling_lr 0.0005 --rotation_lr 0.0001"
+            --save_iterations {save_iterations} --iterations {iter} --checkpoint_iterations {iter} --init_w_gaussian --voxel_size {voxel_size} --densify_from_iter 100 --opacity_reset_interval {opacity_reset_interval} --CS 10 --cls_loss --full_reset_opa"
 subprocess.run(command+suffix, shell=True)
