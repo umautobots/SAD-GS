@@ -42,6 +42,8 @@ Please see [Gaussian Splatting repo](https://github.com/graphdeco-inria/gaussian
 
 ## Quick Start
 
+Download the example Replica dataset from [google drive](https://drive.google.com/drive/folders/1ksnH6eUH1i5UqCwC0_1lY5oYaJCie-Re?usp=sharing).
+
 Please change `data` to the path of the Replica dataset and `output_path` to where you want to save the results in `demo_run_batch_replica.py` and `demo_eval_batch_replica`. You can also change the `cuda_device` to use the assigned gpu accordingly.
 
 To run all the baselines and the proposed SAD-GS on the Replica dataset
