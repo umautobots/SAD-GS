@@ -92,6 +92,8 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, depths_fold
     cam_infos = []
     print('images_folder: ', images_folder)
     print('depths_folder: ', depths_folder)
+    
+    load_depth = os.path.exists(depths_folder)
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
         # the exact output you're looking for:
@@ -122,14 +124,18 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, depths_fold
         image_path = os.path.join(images_folder, os.path.basename(extr.name))
         image_name = os.path.basename(image_path).split(".")[0]
         
-        depth_path = os.path.join(depths_folder, os.path.basename(extr.name[:-3]+'png')) # just a hack
-        depth_name = os.path.basename(depth_path).split(".")[0]
+        if load_depth:
+            depth_path = os.path.join(depths_folder, os.path.basename(extr.name[:-3]+'png')) # just a hack
+            depth_name = os.path.basename(depth_path).split(".")[0]
 
         image = Image.open(image_path)
-        depth = Image.open(depth_path)
+        if load_depth:
+            depth = Image.open(depth_path)
+        else:
+            depth = np.zeros_like(image)
 
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                              image_path=image_path, image_name=image_name, width=width, height=height, depth=depth)
+                              image_path=image_path, image_name=image_name, width=width, height=height, depth=depth, Cx=None, Cy=None, R_gt=None, T_gt=None, mat=None, raw_pc=None, kdtree=None)
         cam_infos.append(cam_info)
     sys.stdout.write('\n')
     return cam_infos
@@ -237,7 +243,9 @@ def readColmapSceneInfo(path, images, depths, eval, llffhold=8):
                            train_cameras=train_cam_infos,
                            test_cameras=test_cam_infos,
                            nerf_normalization=nerf_normalization,
-                           ply_path=ply_path)
+                           ply_path=ply_path,
+                           pseudo_cameras=None,
+                           gaussian_init=None)
     return scene_info
 
 def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png"):
