@@ -38,6 +38,8 @@ import nvidia_smi
 import open3d as o3d
 import numpy as np
 
+from multivariate_normal import CustomMultivariateNormal
+
 nvidia_smi.nvmlInit()
 deviceCount = nvidia_smi.nvmlDeviceGetCount()
 
@@ -248,7 +250,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     gaussians_opa_ = gaussians.get_opacity[gs_mask]
                     occ_pc_ = occ_pc[occ_mask]
                     free_pc_ = free_pc[free_mask]
-                    mvn_ = torch.distributions.MultivariateNormal(gaussians_xyz_, gaussians_cov_)
+                    mvn_ = CustomMultivariateNormal(gaussians_xyz_, gaussians_cov_)
                     if occ_mask.sum()>0 or free_mask.sum()>0:
                         pts_prob_ = query_gaussians(torch.cat((occ_pc_, free_pc_),dim=0), mvn_, gaussians_opa_)
                         occ_pts_prob_ = pts_prob_[:len(occ_pc_)]
